@@ -1,0 +1,6 @@
+Spans
+| where Operation == "chat"
+| summarize LLMCalls = count(), MeanMs = avg(DurationMs), P95Ms = percentile(DurationMs, 95)
+    by bin(TimeGenerated, 5m)
+| project TimeGenerated, LLMCalls, MeanMs, P95Ms
+| order by TimeGenerated asc

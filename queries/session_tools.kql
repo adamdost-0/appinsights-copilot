@@ -1,0 +1,9 @@
+Spans
+| where Operation == "execute_tool"
+| summarize ToolCalls = count(), Failures = countif(Failed), MeanMs = avg(DurationMs),
+    P95Ms = percentile(DurationMs, 95), TotalMs = sum(DurationMs),
+    MissingToolName = countif(isempty(ToolName)), MissingToolType = countif(isempty(ToolType))
+    by ToolName, ToolType
+| project ToolName, ToolType, ToolCalls, Failures, MeanMs, P95Ms, TotalMs, MissingToolName, MissingToolType
+| order by ToolCalls desc
+| take 1000

@@ -32,6 +32,21 @@ The [native guide](docs/native-otlp.md) covers prerequisites, what-if, all three
 scenarios, exact environment variables, token lifetime, and the expected
 metadata-policy failure.
 
+## Visual session explorer
+
+The live Application Insights resource now includes **Copilot CLI - Native
+Session Explorer**, a shared workbook with session summaries, model token
+usage, latency, tool activity, and trace/event drilldowns. Its seven panel
+queries and selected-session filters have been tested against live native data;
+a fresh verified session appeared without redeploying the view.
+
+Open **Application Insights → Workbooks**, or use the portal URL emitted by
+`python3 -m scripts.visualizations --apply`.
+See [visualization setup and evidence](docs/visualizations.md).
+Authenticated portal rendering remains unverified because the isolated browser
+required Microsoft sign-in; saved-resource and query validation are not claimed
+as a screenshot/UI test.
+
 ## Historical collector-based compatibility proof
 
 The initial experiment verified this different, synthetic-only path:

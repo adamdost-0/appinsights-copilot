@@ -1,0 +1,12 @@
+let conversation_count = toscalar(
+    Spans | where isnotempty(ConversationId) | distinct RunId, ConversationId | count);
+Spans
+| summarize ObservedSpans = count(), LLMCalls = countif(Operation == "chat"),
+    ToolCalls = countif(Operation == "execute_tool"),
+    InputTokens = sum(InputTokens), OutputTokens = sum(OutputTokens),
+    Failures = countif(Failed),
+    ChatSpansMissingTokens = countif(Operation == "chat" and (isnull(InputTokens) or isnull(OutputTokens))),
+    SpansMissingConversation = countif(isempty(ConversationId))
+| extend Conversations = conversation_count
+| project ObservedSpans, Conversations, LLMCalls, ToolCalls, InputTokens, OutputTokens,
+    Failures, ChatSpansMissingTokens, SpansMissingConversation

@@ -1,0 +1,12 @@
+let TraceStarts = Spans | summarize TraceStart = min(TimeGenerated) by TraceId;
+Spans
+| join kind=leftouter TraceStarts on TraceId
+| extend OffsetMs = datetime_diff("millisecond", TimeGenerated, TraceStart),
+    SpanKey = strcat(TraceId, "/", SpanId),
+    ParentKey = iff(isempty(ParentSpanId) or ParentSpanId == "0000000000000000",
+                    "", strcat(TraceId, "/", ParentSpanId))
+| project Start = TimeGenerated, End = EndTime, RunId, ConversationId, TraceId,
+    SpanId, ParentSpanId, Operation, Model, ToolName, DurationMs, OffsetMs,
+    StatusCode, Success, Failed, SpanKey, ParentKey
+| order by Start asc
+| take 1000

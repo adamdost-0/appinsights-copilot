@@ -276,6 +276,7 @@ run or replayed diagnostic as a successful native CLI session.
 
 ## References
 
+- [Deploy and validate the native session visualization](visualizations.md)
 - [Native OTLP ingestion and resource orchestration](https://learn.microsoft.com/en-us/azure/azure-monitor/containers/opentelemetry-protocol-ingestion)
 - [Native metric and histogram query behavior](https://learn.microsoft.com/en-us/azure/azure-monitor/metrics/prometheus-opentelemetry-best-practices)
 - Installed `copilot help monitoring` for the CLI's documented controls.

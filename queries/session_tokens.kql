@@ -1,0 +1,7 @@
+Spans
+| where Operation == "chat"
+| summarize LLMCalls = count(), InputTokens = sum(InputTokens), OutputTokens = sum(OutputTokens),
+    ChatSpansMissingTokens = countif(isnull(InputTokens) or isnull(OutputTokens)) by Model
+| project Model, LLMCalls, InputTokens, OutputTokens, ChatSpansMissingTokens
+| order by InputTokens desc
+| take 1000
