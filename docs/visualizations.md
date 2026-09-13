@@ -124,6 +124,16 @@ Microsoft documents **Agents (Preview)**, transaction details/simple view, and
 **Dashboards with Grafana** in Application Insights. The prebuilt Copilot entry
 point is [Microsoft's Copilot dashboard link](https://aka.ms/amg/dash/gh-copilot).
 
+Microsoft's [collection and analysis overview](https://learn.microsoft.com/en-us/azure/azure-monitor/containers/collect-use-observability-data)
+states that Application Insights prebuilt dashboards and queries require
+**delta temporality and exponential histograms** for OTLP metrics. The tested
+Copilot CLI instead emitted cumulative explicit histograms despite the requested
+environment settings. Azure accepted those metrics, but that does not establish
+compatibility with the built-in metric experiences. Turning on component-level
+OTLP support alone does not establish that the CLI's metric format changes.
+The overview recommends Grafana for OTel metric scenarios and states that
+**Live Metrics is unavailable** on the OTel path.
+
 Their rendering and native-data bindings were not verified in the unauthenticated
 browser. No custom Grafana dashboard with guessed datasource identifiers was
 deployed. This workbook is the directly query-validated native visualization

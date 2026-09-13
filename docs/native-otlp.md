@@ -6,6 +6,13 @@ experience; a Data Collection Rule (DCR) routes native traces to Log Analytics a
 metrics to an Azure Monitor workspace. The previous collector-based proof is
 historical evidence, not proof of this route.
 
+Microsoft's [collection and analysis overview](https://learn.microsoft.com/en-us/azure/azure-monitor/containers/collect-use-observability-data)
+explicitly describes using the native endpoint URLs in Collector exporters **or
+SDK configuration**. A Collector is not inherent to the endpoint contract; this
+repository separately verifies the actual Copilot CLI environment-variable path.
+Native OTLP support is a preview without an SLA and is not recommended by that
+guidance for production workloads.
+
 ## Deploy native resources
 
 The native stack is independent of the historical collector stack. It does not
