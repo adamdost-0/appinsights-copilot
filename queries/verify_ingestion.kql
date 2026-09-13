@@ -1,0 +1,23 @@
+// Rendered only by scripts.verify_ingestion with validated, JSON-escaped literals.
+// Missing tables deliberately produce a query error, not fabricated empty success.
+// Span events are traces; INTERNAL/CLIENT spans are dependencies, not requests.
+let run_id = __RUN_ID__;
+let start_time = datetime(__START__);
+let finish_time = datetime(__FINISH__);
+let resource_id = __RESOURCE_ID__;
+union
+    (AppDependencies
+    | where TimeGenerated between (start_time .. finish_time)
+    | where _ResourceId =~ resource_id and tostring(Properties["copilot.run.id"]) == run_id
+    | project Table = "AppDependencies", Name, Id, OperationId, ParentId, Properties,
+              Sum = real(null), ItemCount = real(null)),
+    (AppTraces
+    | where TimeGenerated between (start_time .. finish_time)
+    | where _ResourceId =~ resource_id and tostring(Properties["copilot.run.id"]) == run_id
+    | project Table = "AppTraces", Name = Message, Id = "", OperationId, ParentId, Properties,
+              Sum = real(null), ItemCount = real(null)),
+    (AppMetrics
+    | where TimeGenerated between (start_time .. finish_time)
+    | where _ResourceId =~ resource_id and tostring(Properties["copilot.run.id"]) == run_id
+    | project Table = "AppMetrics", Name, Id = "", OperationId = "", ParentId = "", Properties,
+              Sum = todouble(Sum), ItemCount = todouble(ItemCount))
