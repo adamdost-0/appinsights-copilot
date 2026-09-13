@@ -68,6 +68,50 @@ The tested Bicep 0.42.1 compiler lacks local type metadata for AMW API
 deployment succeeded with that API. No Bicep upgrade or preview-feature
 registration was needed for this manually orchestrated direct path.
 
+### Application Insights-managed OTLP opt-in
+
+The portal's **Turn on OTLP support** action is a separate, irreversible
+onboarding operation. The IaC above implements **manual resource orchestration**;
+it does not turn on that component-level option. Microsoft's
+[native ingestion guide](https://learn.microsoft.com/en-us/azure/azure-monitor/containers/opentelemetry-protocol-ingestion#option-2-manual-resource-orchestration)
+explicitly leaves the optional component's OTLP setting Off in the manual path.
+Successful native ingestion therefore does not prove the portal option is On.
+
+On 2026-09-13, the operator authorized trying the one-way conversion on the
+existing example. Investigation stopped before mutation because the exact
+existing-component write contract could not be verified:
+
+- The published `components@2020-02-02-preview` schema and live component
+  responses did not establish an OTLP enablement field or an AMW link.
+  `WorkspaceResourceId` remains the **Log Analytics** workspace reference.
+- Component capabilities and policy aliases did not expose the operation.
+  Application-scoped DCR association reads returned `UnsupportedResourceType`;
+  creating that association is not an established opt-in mechanism.
+- The provider advertises the extension resource
+  `Microsoft.Monitor/settings@2025-06-03-preview`, but its aliases were empty.
+  A read of application-scoped `settings/default` returned `ResourceNotFound`.
+  These facts do not establish a writable payload or even its role in opt-in.
+- The automation browser required Microsoft sign-in. No authenticated portal
+  request or generated template was available to establish the missing contract.
+
+**Managed opt-in remains blocked and was not applied.** No guessed component
+properties, preview-feature registrations, or replacement workspaces were
+introduced. The existing native route remains intact; re-querying the delegated
+run `d246b82f-3c60-49cb-832d-dd91b7c55a04` still passed with nine spans, six events,
+and fourteen required histogram series. This rechecks existing evidence, not a
+fresh post-conversion run.
+
+To resume, use an authorized portal session to inspect/perform this component's
+opt-in and record its generated deployment template or sanitized request method,
+URL, and JSON body. Never share authorization headers, cookies, tokens, or
+connection strings. Reuse the existing AMW only if the workflow supports it;
+otherwise assess the new workspace and costs before proceeding. Retain private
+before/after snapshots, reconcile resulting links, endpoints, DCR-scoped RBAC and
+IaC ownership, then run a **new** synthetic session and workbook checks. Do not
+blindly reapply the current component template after conversion, assume old
+metrics migrate, or label built-in portal experiences verified without checking
+them in an authenticated browser.
+
 ### Retention, costs, and cleanup
 
 Live readback found 30-day retention and total retention on `OTelSpans`,
