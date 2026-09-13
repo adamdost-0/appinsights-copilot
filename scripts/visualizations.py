@@ -1,4 +1,4 @@
-"""Deploy and read back the Application Insights native session workbook."""
+"""Deploy and read back the Log Analytics workspace session workbook."""
 
 import argparse
 import json
@@ -10,7 +10,7 @@ from .native_deploy import GROUP, check_group
 from .native_smoke import validate_state
 from .session_workbook import build_workbook, validate_queries
 
-DEPLOYMENT = "copilot-native-visualizations"
+DEPLOYMENT = "copilot-otel-v1-visualizations"
 API = "2023-06-01"
 
 
@@ -37,7 +37,7 @@ def parameters(state: dict, model: dict) -> dict:
         "contentVersion": "1.0.0.0",
         "parameters": {
             "location": {"value": state["location"]},
-            "applicationInsightsResourceId": {"value": state["application_insights_resource_id"]},
+            "workspaceResourceId": {"value": state["workspace_resource_id"]},
             "ownershipMarker": {"value": marker},
             "workbookData": {"value": json.dumps(model, separators=(",", ":"))},
         },
@@ -62,10 +62,10 @@ def verify_readback(state: dict, model: dict, resource: dict, expected_id: str) 
     properties = resource.get("properties") or {}
     tags = resource.get("tags") or {}
     if (resource.get("kind") != "shared" or properties.get("category") != "workbook"
-            or properties.get("sourceId", "").lower() != state["application_insights_resource_id"].lower()
-            or tags.get("solution") != "copilot-native-otel"
+            or properties.get("sourceId", "").lower() != state["workspace_resource_id"].lower()
+            or tags.get("solution") != "copilot-otel-v1"
             or tags.get("ownership-marker") != state["ownership_marker"]):
-        raise AppError("Workbook readback did not preserve ownership or Application Insights association")
+        raise AppError("Workbook readback did not preserve ownership or Log Analytics workspace association")
     try:
         stored = json.loads(properties["serializedData"])
     except (KeyError, TypeError, json.JSONDecodeError) as error:
@@ -78,7 +78,8 @@ def deploy(apply: bool) -> dict:
     state = load_json(LOCAL / "native-azure.json")
     model = build_workbook(state)
     parameter_data = parameters(state, model)
-    check_group(state)
+    if check_group(state, require_complete=True) is not True:
+        raise AppError("Visualization deployment requires an existing complete native foundation")
     queries = validate_queries(state)
     write_json(LOCAL / "visualization-query-validation.json", queries)
     if queries.get("ok") is not True:
@@ -120,8 +121,9 @@ def deploy(apply: bool) -> dict:
     verify_readback(state, model, resource, resource_id)
     receipt = {
         "status": "deployed", "workbook_resource_id": resource_id,
-        "workbook_name": "Copilot CLI - Native Session Explorer",
-        "application_insights_resource_id": state["application_insights_resource_id"],
+        "workbook_name": "Copilot CLI - Session Explorer",
+        "workspace_resource_id": state["workspace_resource_id"],
+        "dcr_resource_id": state["dcr_resource_id"],
         "portal_url": "https://portal.azure.com/#resource" + quote(resource_id, safe="/"),
         "panel_queries_verified": True, "saved_definition_verified": True,
         "portal_render_verified": False,

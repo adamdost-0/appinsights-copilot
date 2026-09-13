@@ -1,166 +1,187 @@
-# Native Application Insights session explorer
+# Log Analytics session workbook
 
-The live Application Insights resource now has a shared workbook named
-**Copilot CLI - Native Session Explorer**. It queries the native OTel tables
-directly; no collector, Grafana server, or additional compute is deployed.
+[Administrator guide](../README.md) | [Verify telemetry](verification.md)
 
-## Open the live view
+The v1 workbook is associated with the **Log Analytics workspace**, not an
+Application Insights component. It queries native OTel tables for operational
+session views. Fresh saved-definition/readback, LAW source/gallery association,
+all seven live queries, and both selected drilldowns
+[passed](evidence/v1.md#live-workbook-proof). Authenticated portal rendering
+remains unverified.
 
-In the Azure portal, open `ai-copilot-native-spj7ob6vqx5xm`, select **Workbooks**,
-and open **Copilot CLI - Native Session Explorer** from the saved/shared
-workbooks. Alternatively, use the `portal_url` printed by the deployment
-command or stored in private `.local/visualizations.json`.
+## Deploy and open
 
-The default time range is **24 hours**. The examples were captured on
-2026-09-13; choose an appropriate time range when reviewing them later.
-The optional **ConversationId**, **RunId**, and **TraceId** filters narrow the
-data. Blank means all; multiple populated filters are combined with AND.
-Use the identifiers in the session and trace grids to select a conversation,
-one synthetic CLI run, or a specific execution trace.
-
-| Panel | Value |
-| --- | --- |
-| Overview | Observed spans, conversations, LLM/tool calls, reported tokens, failures, and missing-metadata indicators |
-| Sessions | Conversation/run identity, scenario, observed start/end and wall time, models, calls, reported tokens, and failures |
-| Model token usage | Reported input/output tokens by model |
-| LLM latency | Mean and p95 latency over time, with observed call counts |
-| Tool activity | Tool counts, failures, mean/p95 duration, and missing tool metadata |
-| Trace/span drilldown | Execution steps, parent links, model/tool identity, timing offsets, duration, and status |
-| Events | Timestamped native events correlated with the selected run/trace |
-
-The workbook does not display prompts, responses, tool arguments, or tool
-results by default. It is an operational view, not terminal replay or a complete
-audit record.
-
-## Interpretation
-
-Token totals use **chat spans only**, not both chat and aggregate agent spans.
-They are reported usage, not independently verified billing. Missing token
-attributes are counted explicitly rather than claimed to represent zero
-consumption. At the initial validation, three of eight chat spans lacked token
-usage; the workbook exposed that gap. No model-price or monetary-cost estimate
-is invented.
-
-Conversation identity uses `gen_ai.conversation.id`; `copilot.run.id` is the
-additional test-run identifier. These are not treated as interchangeable.
-Session wall time describes the observed span interval in the selected window;
-summing nested span durations would double-count overlapping work.
-
-Failure counts describe reported span failures. The captured examples are small,
-successful synthetic runs, not a reliability benchmark or a comprehensive
-error-detection test. Partial/dropped traces can undercount activity. The earlier
-native ingestion experiment's strict tool-name/type field-absence result remains
-separate from both successful ingestion and this visualization.
-
-## Repeatable deployment
-
-First deploy and verify the [native OTLP stack](native-otlp.md). The visualization
-uses its private `.local/native-azure.json` receipt and existing ownership
-marker. The deploying identity needs workbook/deployment write access to the
-dedicated native group and permission to query the native Log Analytics data.
-Viewers need permission to read the workbook and its underlying data; workbook
-filters are not an authorization boundary.
+First deploy the [owned v1 resources](deployment.md) and verify metadata-only
+ingestion. Workbook validation also requires a nonempty Tools panel, so
+**explicitly approve an isolated synthetic full-content/tool scenario** before
+proceeding:
 
 ```bash
-python3 -m scripts.session_workbook --validate
+python3 -m scripts.native_smoke --scenario full-content
+```
+
+Verify its printed UUID:
+
+```bash
+export RUN_ID="<uuid-printed-by-the-full-content-command>"
+python3 -m scripts.verify_native --run-id "$RUN_ID" --timeout-seconds 600
 python3 -m scripts.visualizations --what-if
 python3 -m scripts.visualizations --apply
 ```
 
-The entry point `infra/visualizations.bicep` creates one
-`Microsoft.Insights/workbooks` resource. Its `sourceId` associates it with the
-native Application Insights component; the panel queries target the associated
-Log Analytics workspace and explicitly scope to the application.
+An already verified approved delegated fixture with observed tool activity can
+also satisfy this prerequisite. Metadata-only alone is insufficient; do not
+weaken the nonempty Tools validation gate. If synthetic content capture is not
+approved, stop before workbook deployment. The visualization command uses the
+private `.local/native-azure.json` receipt and the existing ownership marker.
 
-`scripts/session_workbook.py` generates the versioned `Notebook/1.0` definition
-from the checked-in `queries/session_*.kql` templates. Parameter values use
-base64 bindings and exact matching rather than unsafe raw KQL interpolation.
+Review the preview before apply. The deployer needs workbook/deployment write
+permissions and LAW query access. Viewers need workbook read access and
+authorized access to the underlying LAW. Filters do not grant or restrict RBAC.
 
-Deployment validates the real panel queries before applying, refuses deletions,
-uses the native group's ownership checks, and reads the complete saved workbook
-back from Azure. It verifies the saved definition, ownership tags, and source
-application. The workbook ID is deterministic, so repeated apply updates the
-same resource. Native ingestion resources and credentials are not changed.
+Both deployment modes require the complete receipt-owned native foundation
+before queries or ARM operations; an absent or incomplete foundation fails
+closed. They then execute all seven panel queries and two selected span/event
+drilldowns, followed by ARM validation and what-if. Failed queries or proposed
+deletion block deployment. For read-only live-query validation without a
+workbook deployment:
 
-Runtime definitions, query responses, deployment receipts, and browser evidence
-remain in ignored `.local/`. They can contain resource/account identifiers;
-do not commit them.
+```bash
+python3 -m scripts.session_workbook --validate
+```
 
-## What was actually verified
+This queries Azure and requires LAW access; it is not an offline check.
 
-| Check | Observed result |
+Open **Copilot CLI - Session Explorer** using the `portal_url` emitted after
+apply or retained privately in `.local/visualizations.json`. The saved LAW
+source/gallery association is verified. It is intended to expose the workbook
+under the workspace's **Workbooks** gallery; authenticated portal browsing and
+rendering remain separate, unverified checks.
+The default time range is 24 hours; select a range containing your fresh
+synthetic run. Span/event queries are bounded to at most 24 hours in KQL.
+
+## Seven panels
+
+| Panel | Interpretation |
 | --- | --- |
-| ARM validation and deployment | Succeeded |
-| Saved definition and Application Insights association | Read back and matched the generated model |
-| Application-scoped workbook listing | Returned the saved workbook |
-| Seven panel queries | All returned the required columns and populated results |
-| Selected trace/event drilldowns | Returned only the selected data |
-| Repeat apply | Preserved workbook identity and the native-ingestion receipt |
-| Fresh telemetry update | A new real delegated CLI run appeared in the workbook queries without redeploying |
-| Actual authenticated portal rendering | **Not verified: browser required Microsoft sign-in** |
+| Overview | Observed spans, conversations, chat/tool calls, reported tokens, failures, and missing metadata |
+| Sessions | Conversation identity, optional diagnostic run/scenario, observed interval, models, call counts, token attributes, and failures |
+| Chat tokens | Reported input/output token usage from chat spans, grouped by model |
+| Latency | Chat-span latency over time, including mean/p95 and observed call counts |
+| Tools | Observed tool activity, failures, durations, and missing tool metadata |
+| Spans | Trace/span IDs, parent relationships, model/tool identity, timing, duration, and status |
+| Events | Native span events correlated with selected runs and traces |
 
-Initial panel validation showed **3 session rows, 15 spans, and 13 events**.
-A fresh, isolated delegated run,
-`d246b82f-3c60-49cb-832d-dd91b7c55a04`, passed the native ingestion verifier with
-9 spans, 6 events, and 14 required histogram series. Re-running the workbook
-queries then showed **4 session rows, 24 spans, and 19 events**. The selected
-fresh-session drilldowns returned its 9 spans and 6 events.
+**RunId**, **ConversationId**, and **TraceId** are safe exact-match selectors.
+Blank means all data in the selected time range; multiple populated selectors
+combine with AND. The definition uses encoded parameter bindings rather than
+unsafe raw KQL interpolation. Conversation identity and the synthetic run UUID
+are different concepts and must not be treated as interchangeable.
 
-An isolated Playwright 1.62.0/Chromium browser reached
-`login.microsoftonline.com` when opening the actual Application Insights portal.
-Azure CLI authentication does not automatically authenticate that browser.
-No personal browser profile, cookies, refresh tokens, or login credentials were
-copied or injected. No screenshot of rendered telemetry is claimed.
+For [approved normal usage](usage.md), built-in conversation and trace identity
+drive navigation. `copilot.run.id` and `copilot.audit.scenario` are optional
+synthetic diagnostic attributes, not enrollment requirements. Ordinary
+`service.name=github-copilot` sessions remain visible without those labels; do
+not label user sessions as synthetic to make them appear. This provides no
+trustworthy user attribution or complete audit trail.
 
-An optional fetch of Microsoft's full workbook JSON schema was blocked by
-GitHub organization SAML authorization; that access requirement was not bypassed.
-ARM validation, definition readback, and live query checks succeeded independently.
-Client-side schema validation and authenticated UI inspection remain separate
-checks.
+The Sessions panel's `SessionKey` uses `conversation:<actual-conversation-id>`,
+falling back to `trace:<actual-trace-id>` when conversation identity is absent.
+If both are unavailable, it stays blank/unknown; no identity is fabricated.
+Missing conversation values remain blank even when a trace-based grouping key
+is available.
 
-## Built-in Agents and Grafana views
+The workbook does not display prompts, responses, tool arguments, or tool
+results by default. It is not terminal replay or a complete security audit.
 
-Microsoft documents **Agents (Preview)**, transaction details/simple view, and
-**Dashboards with Grafana** in Application Insights. The prebuilt Copilot entry
-point is [Microsoft's Copilot dashboard link](https://aka.ms/amg/dash/gh-copilot).
+The fresh live-query dataset contains **4 conversations, 17 spans, and 16
+events**. This includes an isolated synthetic session without RunId/Scenario;
+selecting its actual conversation returned exactly 2 spans and 3 events. No
+normal-user project or history was used. See the
+[measured workbook findings](evidence/v1.md#live-workbook-proof).
 
-Microsoft's [collection and analysis overview](https://learn.microsoft.com/en-us/azure/azure-monitor/containers/collect-use-observability-data)
-states that Application Insights prebuilt dashboards and queries require
-**delta temporality and exponential histograms** for OTLP metrics. The tested
-Copilot CLI instead emitted cumulative explicit histograms despite the requested
-environment settings. Azure accepted those metrics, but that does not establish
-compatibility with the built-in metric experiences. Turning on component-level
-OTLP support alone does not establish that the CLI's metric format changes.
-The overview recommends Grafana for OTel metric scenarios and states that
-**Live Metrics is unavailable** on the OTel path.
+## What the charts do and do not mean
 
-Their rendering and native-data bindings were not verified in the unauthenticated
-browser. No custom Grafana dashboard with guessed datasource identifiers was
-deployed. This workbook is the directly query-validated native visualization
-delivered here; it does not establish that every built-in Copilot panel supports
-the same native table/metric schema.
+Token totals use **chat spans only**, avoiding double counting with aggregate
+agent spans. Missing token attributes are surfaced, not silently assumed to
+mean zero consumption. Reported usage is not an independently verified invoice,
+and no model-price estimate is implied.
 
-The workbook's token and latency panels use native **span data**, not AMW
-histogram queries. AMW metric ingestion and histogram querying remain independently
-verified by `scripts.verify_native`; they are not silently presented as this
-workbook's datasource.
+The **token and latency panels use native span attributes**, not an AMW
+histogram datasource. `scripts.verify_native` separately establishes required
+AMW metric persistence through PromQL. A populated workbook cannot replace
+that check.
 
-## Portal acceptance check
+Observed session wall time is the interval of returned spans in the selected
+window, not the sum of nested durations. Failure counts reflect reported span
+status; missing or dropped telemetry can undercount activity. Small synthetic
+tests are not a latency benchmark or reliability study.
 
-An authorized user can complete the remaining UI check in a normal signed-in
-Azure browser:
+Missing or invalid durations are counted explicitly rather than represented as
+zero. Session wall time remains null when a required span end is missing or
+invalid. Resource enrichment can arrive later than its spans, so resource lookup
+is not clipped to the span time window. Time filtering is applied in the
+span/event KQL, not as a query-wide API or workbook time filter that would also
+clip resource enrichment. Actual portal behavior still requires UI validation.
 
-1. Open the saved workbook and choose a range containing the synthetic runs.
+This workbook makes no claim to deliver built-in Application Insights Agents,
+Grafana, or Live Metrics experiences. The solution provisions no Application
+Insights component or Grafana service.
+
+## Definition and live-query acceptance
+
+[`infra/visualizations.bicep`](../infra/visualizations.bicep) deploys the workbook;
+[`scripts/session_workbook.py`](../scripts/session_workbook.py) builds its
+versioned definition from checked-in `queries/session_*.kql` templates.
+The workbook's source association and panel datasource must both point to the
+owned LAW. Native rows on this no-Application-Insights path have an empty
+`_ResourceId`; they are workspace-scoped, not associated with the DCR through
+that column. Do not filter them by the DCR resource ID. Queries use the exact
+LAW and service/run/conversation/trace correlation, with LAW query permissions.
+Resource lookup deduplicates resource IDs and uses a left outer join so missing
+enrichment is visible rather than silently dropping spans.
+
+Record these checks independently:
+
+| Check | Required observation |
+| --- | --- |
+| ARM validation/apply | Successful result for the owned workbook deployment |
+| Saved readback | Exact expected definition, LAW association, ownership tags, and stable identity |
+| Workspace gallery | Saved workbook discoverable from the intended LAW in an authorized portal session |
+| Seven live panel queries | Correct columns and populated expected results from fresh telemetry |
+| Selector isolation | Selected run/conversation/trace returns only matching data; invalid input does not broaden scope |
+| Repeat apply | Same workbook identity; no ingestion-resource or endpoint changes |
+| Fresh data | A newly verified run appears through live queries without redeploying the workbook |
+| Browser UI | Actual authenticated rendering and selector interaction, checked separately |
+
+Keep generated definitions, query responses, receipts, readbacks, and browser
+evidence under ignored `.local/`. A stored definition proves neither query
+success nor browser rendering. The fresh resource/readback and live-query
+checks passed independently; no authenticated rendering or screenshot is
+claimed.
+
+The apply receipt `.local/visualizations.json` distinguishes
+`panel_queries_verified`, `saved_definition_verified`, and
+`portal_render_verified`. The deployer leaves portal rendering false; a
+successful resource GET is not browser evidence. The generated model is
+`.local/native-session-workbook.json`, projected query rows are
+`.local/session-workbook-queries.json`, and the query-validation report is
+`.local/visualization-query-validation.json`. Keep all of them private.
+
+## Portal acceptance
+
+An authorized user should sign in through the normal Azure portal workflow:
+
+1. Open the saved LAW workbook and choose the fresh-run time range.
 2. Confirm all seven panels render without query or parameter errors.
-3. Select the fresh run or its trace and confirm the 9-span/6-event drilldown.
-4. Confirm reported token/latency charts and missing-metadata indicators are visible.
+3. Select a fresh run, then a conversation/trace, and compare returned counts
+   with that run's measured evidence.
+4. Confirm token/latency charts and missing-metadata indicators are visible.
 
-Record that outcome separately from API/query validation. Do not mark
-`portal_render_verified` true merely because a workbook resource exists.
+Azure CLI authentication does not automatically authenticate a browser.
+Do not copy personal browser profiles, cookies, or refresh tokens into
+automation. If sign-in blocks inspection, report **UI not verified**, even if
+ARM, readback, and all seven live queries succeed.
 
-## References
-
-- [Workbooks ARM resource contract](https://learn.microsoft.com/en-us/azure/templates/microsoft.insights/2023-06-01/workbooks)
-- [Workbook parameters and formatters](https://learn.microsoft.com/en-us/azure/azure-monitor/visualize/workbooks-parameters)
-- [Agent visualization experience](https://learn.microsoft.com/en-us/azure/azure-monitor/app/agents-view)
-- [Embedded Grafana experience](https://learn.microsoft.com/en-us/azure/azure-monitor/app/grafana-dashboards)
+References: [Workbook ARM resource](https://learn.microsoft.com/en-us/azure/templates/microsoft.insights/2023-06-01/workbooks),
+[workbook parameters](https://learn.microsoft.com/en-us/azure/azure-monitor/visualize/workbooks-parameters).

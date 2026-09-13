@@ -17,13 +17,13 @@ RUN = "00000000-0000-4000-8000-000000000003"
 CONVERSATION = "actual-conversation-not-the-run"
 TRACE = "a" * 32
 PREFIX = f"/subscriptions/{SUB}/resourceGroups/synthetic/providers/"
-APP = PREFIX + "Microsoft.Insights/components/synthetic"
+DCR = PREFIX + "Microsoft.Insights/dataCollectionRules/synthetic"
 LAW = PREFIX + "Microsoft.OperationalInsights/workspaces/synthetic"
 
 
 def state():
     return {"subscription_id": SUB, "workspace_customer_id": WORKSPACE,
-            "application_insights_resource_id": APP, "workspace_resource_id": LAW}
+            "dcr_resource_id": DCR, "workspace_resource_id": LAW}
 
 
 def module():
@@ -39,6 +39,7 @@ def payload(name, empty=False):
     columns = module().PANEL_COLUMNS[name]
     values = {
         "RunId": RUN, "ConversationId": CONVERSATION, "TraceId": TRACE,
+        "SessionKey": "conversation:" + CONVERSATION,
         "SpanId": "b" * 16, "ParentSpanId": "", "Scenario": "delegated",
         "Model": "synthetic-model", "Models": '["synthetic-model"]',
         "ToolName": "synthetic-tool", "ToolType": "function",
@@ -72,7 +73,8 @@ class WorkbookTests(unittest.TestCase):
             self.assertEqual(content["queryType"], 0)
             self.assertEqual(content["resourceType"], "microsoft.operationalinsights/workspaces")
             self.assertEqual(content["crossComponentResources"], [LAW])
-            self.assertEqual(content["timeContextFromParameter"], "TimeRange")
+            self.assertNotIn("timeContextFromParameter", content)
+            self.assertNotIn("timeContext", content)
 
     def test_invalid_missing_or_cross_subscription_scope_is_rejected_before_io(self):
         bad = []
@@ -83,12 +85,12 @@ class WorkbookTests(unittest.TestCase):
         for key, value in (
                 ("subscription_id", "not-a-uuid"),
                 ("workspace_customer_id", WORKSPACE + "'; union *"),
-                ("workspace_resource_id", APP),
-                ("application_insights_resource_id", LAW),
+                ("workspace_resource_id", DCR),
+                ("dcr_resource_id", LAW),
                 ("workspace_resource_id", LAW.replace(SUB, WORKSPACE)),
-                ("application_insights_resource_id", APP.replace(SUB, WORKSPACE)),
-                ("application_insights_resource_id", APP + '"/query'),
-                ("application_insights_resource_id", APP + "\n| union *"),
+                ("dcr_resource_id", DCR.replace(SUB, WORKSPACE)),
+                ("dcr_resource_id", DCR + '"/query'),
+                ("dcr_resource_id", DCR + "\n| union *"),
                 ("workspace_resource_id", LAW + "?api-version=bad")):
             bad.append(dict(state(), **{key: value}))
         with patch("scripts.session_workbook.run_json") as run:
@@ -103,14 +105,15 @@ class WorkbookTests(unittest.TestCase):
     def test_native_templates_preserve_json_braces_and_scope_every_table(self):
         for content in queries().values():
             query = content["query"]
-            for expected in ("OTelSpans", "OTelResources", "_ResourceId =~ resource_id",
-                             json.dumps(APP), "ago(24h)", "{TimeRange}", "dynamic({})",
+            for expected in ("OTelSpans", "OTelResources", '_ResourceId == ""',
+                             "ago(24h)", "{TimeRange}", "dynamic({})",
                              "arg_max(TimeGenerated", "by TraceId, SpanId",
-                             'ResourceAttributes["service.name"]', '"github-copilot"',
-                             '"metadata-only", "full-content", "delegated"'):
+                             'ResourceAttributes["service.name"]', '"github-copilot"'):
                 self.assertIn(expected, query)
             for forbidden in ("AppTraces", "AppDependencies", "AppMetrics", "union *",
-                              "workspace(", "app(", "isfuzzy", "__APP_RESOURCE_ID__"):
+                              "workspace(", "app(", "isfuzzy", "__DCR_RESOURCE_ID__",
+                              "Microsoft.Insights/components", "OTelMetrics", DCR,
+                              "let resource_id", "_ResourceId =~"):
                 self.assertNotIn(forbidden, query)
         event = queries()["events"]["query"]
         self.assertIn("OTelEvents", event)
@@ -118,11 +121,71 @@ class WorkbookTests(unittest.TestCase):
         self.assertIn("on TraceId, SpanId", event)
         self.assertIn("| project TimeGenerated, EventName", event)
 
+    def test_every_native_table_requires_empty_resource_association(self):
+        for name, content in queries().items():
+            with self.subTest(panel=name):
+                self.assertEqual(content["query"].count('| where _ResourceId == ""'),
+                                 3 if name == "events" else 2)
+                self.assertNotIn("isempty(_ResourceId)", content["query"])
+        text = module().NOTES
+        self.assertIn("empty `_ResourceId`", text)
+        self.assertIn("DCR IDs are endpoint provenance", text)
+        self.assertNotIn("scoped to the configured DCR", text)
+
+    def test_ordinary_cli_needs_service_but_not_harness_resource_attributes(self):
+        for name, content in queries().items():
+            with self.subTest(panel=name):
+                query = content["query"]
+                self.assertIn('| where tostring(ResourceAttributes["service.name"]) == "github-copilot"',
+                              query)
+                self.assertNotIn("where isnotempty(RunId)", query)
+                self.assertNotIn("Scenario in (", query)
+                self.assertIn("where isempty(selected_run) or RunId == selected_run", query)
+        self.assertNotIn("synthetic-only", module().NOTES)
+        self.assertIn("optional", module().NOTES)
+        self.assertNotIn("synthetic", module().TITLES["sessions"])
+
+    def test_sessions_use_conversation_or_trace_without_inventing_conversation_identity(self):
+        query = queries()["sessions"]["query"]
+        self.assertIn("SessionKey", module().PANEL_COLUMNS["sessions"])
+        self.assertIn('isnotempty(ConversationId), strcat("conversation:", ConversationId)', query)
+        self.assertIn('isnotempty(TraceId), strcat("trace:", TraceId)', query)
+        self.assertIn("by SessionKey, RunId, ConversationId, Scenario", query)
+        self.assertNotIn("ConversationId = TraceId", query)
+        self.assertNotIn("ConversationId = RunId", query)
+        self.assertIn("SpansMissingConversation", queries()["overview"]["query"])
+
+    def test_resource_enrichment_is_deduplicated_optional_and_not_span_time_bounded(self):
+        query = queries()["sessions"]["query"]
+        resources = query.split("let Resources =", 1)[1].split("let Spans =", 1)[0]
+        self.assertIn("where isnotempty(Id)", resources)
+        self.assertIn("where Id in (WindowSpans | project ResourceAttributesId)", resources)
+        self.assertIn("arg_max(TimeGenerated, Attributes) by Id", resources)
+        self.assertNotIn("ago(", resources)
+        self.assertNotIn("{TimeRange}", resources)
+        self.assertIn("join kind=leftouter Resources on ResourceAttributesId", query)
+        self.assertIn("coalesce(ResourceAttributes, dynamic({}))", query)
+        self.assertIn("coalesce(JoinedResourceAttributes, dynamic({}))", query)
+
+    def test_invalid_durations_are_null_and_missing_durations_are_visible(self):
+        for name in ("overview", "latency", "tools"):
+            self.assertIn("SpansMissingDuration", module().PANEL_COLUMNS[name])
+            self.assertIn("SpansMissingDuration = countif(isnull(DurationMs))",
+                          queries()[name]["query"])
+        query = queries()["spans"]["query"]
+        self.assertIn("isfinite(todouble(DurationMs))", query)
+        self.assertIn("todouble(DurationMs) >= 0", query)
+        self.assertIn("real(null)", query)
+        self.assertIn("EndTime >= TimeGenerated", query)
+        self.assertIn("datetime(null)", query)
+        self.assertIn("SpansMissingEndTime", module().PANEL_COLUMNS["sessions"])
+        self.assertIn("SpansMissingEndTime == 0", queries()["sessions"]["query"])
+
     def test_actual_conversations_chat_only_tokens_and_missing_data_are_explicit(self):
         query = queries()["sessions"]["query"]
         self.assertIn('ConversationId = tostring(Attributes["gen_ai.conversation.id"])', query)
         self.assertIn('RunId = tostring(ResourceAttributes["copilot.run.id"])', query)
-        self.assertIn("by RunId, ConversationId, Scenario", query)
+        self.assertIn("by SessionKey, RunId, ConversationId, Scenario", query)
         self.assertIn('InputTokens = iff(Operation == "chat",', query)
         self.assertIn('OutputTokens = iff(Operation == "chat",', query)
         self.assertIn('Attributes["gen_ai.usage.input_tokens"]', query)
@@ -168,9 +231,10 @@ class WorkbookTests(unittest.TestCase):
             self.assertIn(col, spans["query"])
         text = "\n".join(i["content"]["json"] for i in module().build_workbook(state())["items"]
                          if i["type"] == 1)
-        for phrase in ("synthetic-only", "underreport", "no cost estimates", "not a secret leak",
+        for phrase in ("ordinary CLI", "SessionKey", "underreport", "no cost estimates", "not a secret leak",
                        "subagent", "observed span errors", "ConversationId", "RunId", "TraceId",
-                       "missing", "24 hours", "chat"):
+                       "missing", "24 hours", "chat", "span summaries", "not a metrics",
+                       "arrive later", "DCR"):
             self.assertIn(phrase, text)
 
 
@@ -205,8 +269,9 @@ class ValidationTests(unittest.TestCase):
             self.assertEqual(args[args.index("--resource") + 1], "https://api.loganalytics.io")
             self.assertEqual(args[args.index("--subscription") + 1], SUB)
             body = json.loads(args[args.index("--body") + 1])
-            self.assertEqual(body["timespan"], "PT24H")
-            self.assertIn(APP, body["query"])
+            self.assertNotIn("timespan", body)
+            self.assertNotIn(DCR, body["query"])
+            self.assertIn('| where _ResourceId == ""', body["query"])
             self.assertNotIn("{TimeRange}", body["query"])
         for name, result in report["panels"].items():
             self.assertGreater(result["row_count"], 0)
@@ -232,6 +297,46 @@ class ValidationTests(unittest.TestCase):
                 self.assertFalse(report["ok"])
                 self.assertTrue(all(not p["ok"] for p in report["panels"].values()))
                 self.assertNotIn("private prompt", json.dumps(report))
+
+    def test_ordinary_cli_drilldown_validation_does_not_require_a_run_or_conversation(self):
+        for conversation in (CONVERSATION, ""):
+            def ordinary(name):
+                data = payload(name)
+                columns = module().PANEL_COLUMNS[name]
+                for field, value in (("RunId", ""), ("Scenario", ""),
+                                     ("ConversationId", conversation)):
+                    if field in columns:
+                        data["tables"][0]["rows"][0][columns.index(field)] = value
+                return data
+            with self.subTest(conversation=conversation):
+                report, calls, stored = self.validate(ordinary)
+                self.assertTrue(report["ok"])
+                self.assertEqual(len(calls), 9)
+                for name in ("spans", "events"):
+                    self.assertTrue(report["selection_checks"][name]["ok"])
+                    selected = stored["queries"]["selected_" + name]["query"]
+                    self.assertIn("let selected_run = base64_decode_tostring('');", selected)
+
+    def test_drilldown_still_requires_trace_identity_and_rejects_wrong_selected_trace(self):
+        def no_trace(name):
+            data = payload(name)
+            if name == "events":
+                data["tables"][0]["rows"][0][module().PANEL_COLUMNS[name].index("TraceId")] = ""
+            return data
+        report, calls, _ = self.validate(no_trace)
+        self.assertFalse(report["ok"])
+        self.assertEqual(len(calls), 7)
+        self.assertEqual(report["selection_checks"]["spans"]["error"], "no_correlated_selection")
+        counts = {}
+        def wrong_trace(name):
+            data = payload(name)
+            counts[name] = counts.get(name, 0) + 1
+            if name == "spans" and counts[name] == 2:
+                data["tables"][0]["rows"][0][module().PANEL_COLUMNS[name].index("TraceId")] = "c" * 32
+            return data
+        report, _, _ = self.validate(wrong_trace)
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["selection_checks"]["spans"]["error"], "selection_mismatch")
 
     def test_zero_activity_overview_cannot_pass_on_aggregate_row_alone(self):
         def zero(name):

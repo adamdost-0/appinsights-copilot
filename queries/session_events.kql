@@ -1,7 +1,7 @@
 OTelEvents
 | where TimeGenerated between (ago(24h) .. now())
 | where TimeGenerated {TimeRange}
-| where _ResourceId =~ resource_id
+| where _ResourceId == ""
 | join kind=inner (Spans | project TraceId, SpanId, RunId, ConversationId) on TraceId, SpanId
 | project TimeGenerated, EventName = Name, RunId, ConversationId, TraceId, SpanId
 | order by TimeGenerated desc

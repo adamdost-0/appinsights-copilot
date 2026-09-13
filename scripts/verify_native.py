@@ -5,11 +5,15 @@ Usage: python3 -m scripts.verify_native --run-id UUID --timeout-seconds 600
 Only native OTelSpans/OTelEvents/OTelResources and the native metrics query API
 are evidence. No collector, classic App tables, source file, or fixture CLI mode
 is supported. Spans/events use the completed manifest's fixed time window.
-Resource metadata is restricted to those spans' resource IDs, rather than its
+Resource metadata is restricted to those spans' resource attribute IDs, rather than its
 potentially later arrival timestamp. Histogram
 count/sum functions operate on dotted BASE metric names and individual snapshots;
-cumulative snapshots are never added together. Persisted metrics must also carry
-the configured microsoft.appresourceid and microsoft.amwresourceid labels.
+cumulative snapshots are never added together. Persisted metrics must carry the configured microsoft.amwresourceid label.
+If a metric application association label is present it must identify this DCR,
+not an Application Insights component. Native no-App LAW rows instead have
+exactly empty _ResourceId and are workspace-scoped. Deployment readback binds the
+query workspace customer ID to its ARM workspace ID. The manifest retains DCR,
+DCE and endpoint provenance; no resource association fallback is inferred.
 
 Raw backend data is sensitive and remains in private raw-native-query.json.
 results.json contains counts and fixed diagnostics. A privacy failure can coexist
@@ -22,18 +26,24 @@ https://learn.microsoft.com/azure/azure-monitor/metrics/prometheus-opentelemetry
 """
 
 import argparse
-from datetime import timedelta
+from datetime import datetime, timedelta
 import json
 import math
 import os
+from pathlib import Path
 import re
 import time
 from urllib.parse import urlencode, urlsplit
 from uuid import uuid4
 
 from .common import AppError, LOCAL, ROOT, load_json, run_json, validate_run_id, write_json
-from .native_smoke import validate_state as validate_ingest_state
-from .verify_ingestion import QueryError, _cli_version, _content, _utc, trusted_path
+from .common import cli_version as _cli_version
+from .native_smoke import PRIVACY_POLICIES, validate_state as validate_ingest_state
+
+CONTENT_FIELDS = frozenset({
+    "gen_ai.input.messages", "gen_ai.output.messages", "gen_ai.system_instructions",
+    "gen_ai.tool.definitions", "gen_ai.tool.call.arguments", "gen_ai.tool.call.result",
+})
 
 METRICS = ("gen_ai.client.token.usage", "gen_ai.client.operation.duration",
            "gen_ai.invoke_agent.duration")
@@ -52,7 +62,68 @@ LIMITATIONS = [
     "Privacy is checked on returned native backend attributes, not on CLI memory or pre-ingestion traffic.",
     "Histogram count/sum snapshots prove persistence, not bucket fidelity or SDK temporality/aggregation environment-variable support.",
     "Metrics are evaluated at manifest.finished_at; samples outside the backend's instant-query lookback are not inferred.",
+    "metadata-only-v1 permits exact tool name/type objects only; strict-absence rejects the entire tool definitions field.",
+    "No-App LAW scope is the deployment-verified workspace customer ID; native rows must have empty _ResourceId, not a DCR or application association.",
 ]
+
+
+class QueryError(AppError):
+    """A sanitized native query failure with an explicit retry policy."""
+
+    def __init__(self, message, *, retryable=False):
+        super().__init__(message)
+        self.retryable = retryable
+
+
+def _utc(value):
+    if not isinstance(value, str):
+        raise AppError("Manifest timestamps must be UTC ISO strings")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise AppError("Manifest timestamps must be UTC ISO strings") from error
+    if parsed.tzinfo is None or parsed.utcoffset().total_seconds() != 0:
+        raise AppError("Manifest timestamps must include UTC timezone")
+    return parsed
+
+
+def trusted_path(value, local=None):
+    """Accept only absolute, symlink-free paths strictly below private local state."""
+    local = Path(local if local is not None else LOCAL).absolute()
+    path = Path(value)
+    if not path.is_absolute() or ".." in path.parts or not path.is_relative_to(local) or path == local:
+        raise AppError("Evidence/state path must remain within ROOT/.local")
+    for component in (path, *path.parents):
+        if component.is_symlink():
+            raise AppError("Refusing symlink in evidence/state path")
+    return path
+
+
+def _content(attributes, prefix=""):
+    result = {}
+    for key, value in attributes.items():
+        if not isinstance(key, str):
+            raise AppError("Native attribute keys must be strings")
+        path = prefix + key
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                pass
+        if any(path == field or path.startswith(field + ".") for field in CONTENT_FIELDS):
+            result[path] = value
+        elif isinstance(value, dict):
+            result.update(_content(value, path + "."))
+    return result
+
+
+def _tool_metadata_only(value):
+    return isinstance(value, list) and all(
+        isinstance(item, dict) and set(item) == {"name", "type"}
+        and isinstance(item["name"], str)
+        and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]{0,127}", item["name"])
+        and item["type"] == "function"
+        for item in value)
 
 
 def validate_state(state: dict) -> dict:
@@ -82,8 +153,12 @@ def validate_manifest(manifest: dict, run_id: str, state: dict) -> dict:
     validate_state(state)
     if not isinstance(manifest, dict) or manifest.get("run_id") != run_id:
         raise AppError("Native manifest run ID does not match the requested run")
-    if manifest.get("collector_mode") != "native-azure":
+    if manifest.get("transport") != "native-azure":
         raise AppError("Only an explicit native-azure CLI run can establish native proof")
+    if manifest.get("privacy_policy") not in PRIVACY_POLICIES:
+        raise AppError("Native manifest requires an explicit supported privacy policy")
+    if "application_insights_resource_id" in manifest or "collector_mode" in manifest:
+        raise AppError("Historical resource or transport manifests cannot establish DCE-only v1 proof")
     if manifest.get("status") != "awaiting_verification" or type(manifest.get("exit_code")) is not int or manifest["exit_code"]:
         raise AppError("A completed successful native CLI run awaiting verification is required")
     scenario = manifest.get("scenario")
@@ -97,7 +172,7 @@ def validate_manifest(manifest: dict, run_id: str, state: dict) -> dict:
     if not timedelta(0) < finish - start <= timedelta(hours=6):
         raise AppError("Native manifest must describe a positive window of at most six hours")
     _cli_version(manifest.get("cli_version"))
-    for key in ("dcr_resource_id", "application_insights_resource_id"):
+    for key in ("dcr_resource_id", "dce_resource_id"):
         if not isinstance(manifest.get(key), str) or manifest[key].lower() != state[key].lower():
             raise AppError("Native manifest resource identity differs from query state")
     for key in ("traces_endpoint", "metrics_endpoint"):
@@ -119,7 +194,6 @@ def build_query(manifest: dict, state: dict, *, template: str | None = None) -> 
             raise AppError("Cannot read queries/verify_native.kql") from error
     replacements = {
         "__RUN_ID__": json.dumps(manifest["run_id"]),
-        "__RESOURCE_ID__": json.dumps(state["application_insights_resource_id"]),
         "__SCENARIO__": json.dumps(manifest["scenario"]),
         "__VERSION__": json.dumps(_cli_version(manifest["cli_version"])),
         "__START__": _utc(manifest["started_at"]).isoformat(),
@@ -234,6 +308,7 @@ def parse_metric_response(payload: dict, manifest: dict, *, run_id: str | None =
     if payload.get("status") != "success":
         raise QueryError("native_metrics_query_not_successful")
     data = _object(payload.get("data"), "metric data")
+    _errors(data)
     if data.get("resultType") != "vector":
         raise AppError("Native metrics require an instant vector, not cumulative snapshot ranges")
     result = []
@@ -288,9 +363,8 @@ def _trace_evidence(rows: list[dict], manifest: dict) -> tuple[dict, list[dict]]
             raise AppError("Only complete native OTel rows establish native trace proof")
         if not isinstance(row["Name"], str) or not row["Name"]:
             raise AppError("Native span/event name is missing")
-        if not isinstance(row["_ResourceId"], str) or row["_ResourceId"].lower() != manifest[
-                "application_insights_resource_id"].lower():
-            raise AppError("Native trace application resource identity mismatch")
+        if row["_ResourceId"] != "":
+            raise AppError("Native no-App workspace rows require an exactly empty resource association")
         _identity(_object(row["ResourceAttributes"], "resource attributes"), manifest)
         attributes = _object(row["Attributes"], "span/event attributes")
         for key in ("copilot.run.id", "copilot.audit.scenario", "service.name", "service.version"):
@@ -341,10 +415,12 @@ def _metric_series(payload: dict, manifest: dict, state: dict, name: str, statis
     result = {}
     for sample in parse_metric_response(payload, manifest):
         labels = sample["labels"]
-        for label, state_key in (("microsoft.appresourceid", "application_insights_resource_id"),
+        for label, state_key in (("microsoft.appresourceid", "dcr_resource_id"),
                                  ("microsoft.amwresourceid", "azure_monitor_workspace_resource_id")):
+            if label == "microsoft.appresourceid" and label not in labels:
+                continue
             if labels.get(label, "").lower() != state[state_key].lower():
-                raise AppError("Native metric Azure application/workspace resource identity mismatch")
+                raise AppError("Native metric Azure DCR/workspace resource identity mismatch")
         if "__name__" in labels and labels["__name__"] != name:
             raise AppError("Native metric family identity mismatch")
         if statistic == "count" and not sample["value"].is_integer():
@@ -367,11 +443,13 @@ def assess(manifest: dict, state: dict, rows: list[dict], metrics: dict,
     result = {
         "status": "pending", "azure_ingestion_proven": False,
         "native_cli_content_privacy_verified": False, "proof_scope": "azure-native-backends",
+        "privacy_policy": manifest.get("privacy_policy") if isinstance(manifest, dict) else None,
         "checks": {"trace_persistence": False, "metric_persistence": False,
                    "negative_control": False, "content": False, "privacy": False},
         "counts": {"spans": 0, "events": 0, "invoke_agent": 0, "chat": 0, "execute_tool": 0,
                    "delegated_agent_children": 0, "metric_families": 0, "metric_series": 0,
-                   "privacy_fields": 0, "content_fields_verified": 0},
+                   "privacy_fields": 0, "content_fields_verified": 0,
+                   "allowed_tool_metadata_fields": 0},
         "reasons": [], "limitations": list(LIMITATIONS),
     }
     try:
@@ -402,7 +480,7 @@ def assess(manifest: dict, state: dict, rows: list[dict], metrics: dict,
             parents_complete = False
         tools_required = manifest["scenario"] != "metadata-only"
         checks["trace_persistence"] = bool(
-            operations["invoke_agent"] and operations["chat"] and parents_complete
+            operations["invoke_agent"] and operations["chat"] and events and parents_complete
             and (not tools_required or operations["execute_tool"])
             and (manifest["scenario"] != "delegated" or
                  len(operations["invoke_agent"]) >= 2 and counts["delegated_agent_children"] > 0))
@@ -427,11 +505,17 @@ def assess(manifest: dict, state: dict, rows: list[dict], metrics: dict,
             if parse_metric_response(negative, manifest, run_id=negative_run_id):
                 raise AppError("Negative control returned data for a never-emitted UUID")
             checks["negative_control"] = True
-        counts["privacy_fields"] = sum(len(_content(bag)) for bag in privacy_bags)
+        for bag in privacy_bags:
+            for key, value in _content(bag).items():
+                if (manifest["privacy_policy"] == "metadata-only-v1"
+                        and key == "gen_ai.tool.definitions" and _tool_metadata_only(value)):
+                    counts["allowed_tool_metadata_fields"] += 1
+                else:
+                    counts["privacy_fields"] += 1
         checks["privacy"] = bool(spans) and counts["privacy_fields"] == 0
         result["native_cli_content_privacy_verified"] = (
             manifest["scenario"] == "metadata-only" and checks["trace_persistence"]
-            and checks["metric_persistence"] and checks["privacy"])
+            and checks["metric_persistence"] and checks["negative_control"] and checks["privacy"])
 
         def has_marker(span, field):
             attributes = [span["Attributes"]] + [
@@ -572,6 +656,7 @@ def verify(run_id: str, timeout_seconds: float = 600, *, query=None, clock=None,
     result = {
         "status": "failed", "azure_ingestion_proven": False,
         "native_cli_content_privacy_verified": False, "proof_scope": "azure-native-backends",
+        "privacy_policy": None,
         "counts": {}, "checks": {}, "reasons": [], "limitations": list(LIMITATIONS),
     }
     raw = {"attempts": 0, "negative_run_id": negative_run_id, "response": None}
@@ -580,6 +665,7 @@ def verify(run_id: str, timeout_seconds: float = 600, *, query=None, clock=None,
     try:
         state = validate_state(load_json(trusted_path(str(LOCAL / "native-azure.json"), local=LOCAL)))
         manifest = validate_manifest(load_json(trusted_path(str(folder / "manifest.json"), local=LOCAL)), run_id, state)
+        result["privacy_policy"] = manifest["privacy_policy"]
         while clock() < deadline and attempts < MAX_ATTEMPTS:
             attempts += 1
             raw = {"attempts": attempts, "negative_run_id": negative_run_id, "response": None}
@@ -632,7 +718,8 @@ def main(argv=None) -> int:
         print(json.dumps({"status": "failed", "azure_ingestion_proven": False, "counts": {}}))
         return 1
     print(json.dumps({key: result[key] for key in (
-        "run_id", "status", "azure_ingestion_proven", "native_cli_content_privacy_verified", "counts", "attempts",
+        "run_id", "status", "privacy_policy", "azure_ingestion_proven",
+        "native_cli_content_privacy_verified", "counts", "attempts",
     )}, sort_keys=True))
     return 0 if result["status"] == "passed" else 1
 

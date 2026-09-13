@@ -1,140 +1,331 @@
-# Deployment and collector lifecycle
+# Deploy and rebuild with Azure CLI
 
-**Historical path:** this page covers the local-collector experiment.
-For the current collector-free target, use [native deployment and environment
-configuration](native-otlp.md); Docker is not required for that path.
+[Administrator guide](../README.md) | [Infrastructure contract](../infra/README.md)
 
-## Prerequisites and boundaries
+This workflow provisions a dedicated v1 group, an explicit DCE/DCR, Log
+Analytics, and an Azure Monitor workspace. There is no Application Insights
+component or portal OTLP opt-in. Microsoft documents Application Insights as
+optional in [manual resource orchestration](https://learn.microsoft.com/en-us/azure/azure-monitor/containers/opentelemetry-protocol-ingestion#option-2-manual-resource-orchestration).
 
-The supported cloud is public `AzureCloud`. Install Python **3.12+** (tested on 3.12.3), Azure CLI/Bicep, Docker client plus a **local** running daemon capable of host bind mounts, and Copilot CLI. Version observations, not blanket compatibility guarantees, are in [the evidence record](evidence/local-example.md).
+**Azure native OTLP is preview, has no SLA, and is not recommended for
+production.** Obtain organizational approval for the region, public endpoints,
+test data, identity roles, and costs before deployment. The examples use public
+`AzureCloud` and `eastus`; do not assume another cloud/region is validated.
 
-Azure authentication is a separate authorized operator action. The scripts never log in, register providers, grant roles, or silently select another subscription. An enabled account needs subscription-scope deployment and resource-group creation permissions plus the required resource permissions. `Microsoft.OperationalInsights` and `Microsoft.Insights` must already be registered. Query access additionally requires appropriate workspace data-plane RBAC (for example Log Analytics Reader at the intended workspace scope); public query access is not anonymous access. GitHub authentication alone cannot deploy or query Azure.
+## Prerequisites and sign-in
 
-For synthetic Copilot inference, authenticate GitHub CLI separately with `gh auth login`, or supply a supported token through `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`. The harness reads an existing GitHub CLI token internally when no supported token variable is set. Never write a GitHub token into `.env`, `.local/collector.env`, or collector configuration. The harness leaves normal Copilot configuration untouched; do not copy a normal profile into its temporary home.
+Use Linux and Python **3.12+** with the standard library, Azure CLI with Bicep,
+Copilot CLI, and GitHub CLI. Linux is the tested platform; PowerShell and Windows
+are not validated. No Python third-party package, Docker daemon, hosted
+collector, or monitoring agent is required.
+
+Use an enabled authorized subscription and identities with permission to create
+the dedicated resource group, deploy its monitoring resources, and assign the
+scoped roles below. The scripts do not sign in or bypass Azure policy.
+
+```bash
+az login
+export AZURE_SUBSCRIPTION_ID="<your-authorized-subscription-uuid>"
+az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+gh auth login --hostname github.com
+python3 -m scripts.preflight
+```
+
+Azure and GitHub authentication are separate. The GitHub account must be
+authorized for Copilot inference. The isolated runner reads its token internally;
+do not print tokens or copy a normal user's Copilot history/configuration.
+
+The required resource providers are `Microsoft.Insights`,
+`Microsoft.OperationalInsights`, and `Microsoft.Monitor`. Inspect them:
+
+```bash
+for PROVIDER in Microsoft.Insights Microsoft.OperationalInsights Microsoft.Monitor; do
+  az provider show --namespace "$PROVIDER" \
+    --subscription "$AZURE_SUBSCRIPTION_ID" \
+    --query '{namespace:namespace,state:registrationState}' --output table
+done
+```
+
+If one is not registered, an authorized subscription administrator can explicitly
+register that provider, for example:
+
+```bash
+az provider register --namespace Microsoft.Monitor \
+  --subscription "$AZURE_SUBSCRIPTION_ID" --wait
+```
+
+Provider registration is not an OTLP portal opt-in. Do not guess feature
+registrations or mutate unrelated monitoring resources to work around an error.
+
+## Publishing and querying roles
+
+| Role | Scope | Purpose |
+| --- | --- | --- |
+| Monitoring Metrics Publisher | Explicit DCR | Send authorized traces and metrics |
+| Monitoring Data Reader | Azure Monitor workspace | Query native histogram metrics |
+| Log Analytics Reader | Log Analytics workspace | Query native spans, events, resources |
+
+By default, the signed-in user's object UUID is used for publishing and
+querying. The deployer may need directory read permission to resolve it.
+For a known identity, pass `--principal-id <object-uuid>` and
+`--principal-type User`, `ServicePrincipal`, or `Group`. Use the **object ID**,
+not an application/client ID. Non-user principals require an explicit ID.
+
+The optional `--operator-principal-id` and `--operator-principal-type` select a
+different query operator. Without them, the query identity defaults to the
+publisher. With an explicit operator ID and no operator type, the type defaults
+to `User`. For example, separate a service-principal publisher from an auditor
+group:
+
+```bash
+export PUBLISHER_OBJECT_ID="<sender-service-principal-object-uuid>"
+export AUDITOR_GROUP_OBJECT_ID="<auditor-group-object-uuid>"
+python3 -m scripts.native_deploy \
+  --subscription "$AZURE_SUBSCRIPTION_ID" --location eastus --what-if \
+  --principal-id "$PUBLISHER_OBJECT_ID" --principal-type ServicePrincipal \
+  --operator-principal-id "$AUDITOR_GROUP_OBJECT_ID" --operator-principal-type Group
+```
+
+After review, use the same identity flags with `--apply` in place of
+`--what-if`. The identity used by the smoke command's Azure CLI session must
+actually have publishing access; the identity used to verify/query must have
+reader access. Assigning a role to a principal does not switch your Azure CLI
+login to that principal. Deployer authority is separate from data-plane roles.
+Changing principal flags is not automatic revocation of old role assignments;
+review and revoke obsolete access through your approved RBAC process.
+
+## Preview and apply
+
+Run from the repository root:
+
+```bash
+python3 -m scripts.native_deploy \
+  --subscription "$AZURE_SUBSCRIPTION_ID" --location eastus --what-if
+python3 -m scripts.native_deploy \
+  --subscription "$AZURE_SUBSCRIPTION_ID" --location eastus --apply
+```
+
+Review the proposed scope and cost before the second command. The wrapper uses
+[`infra/main.bicep`](../infra/main.bicep) and
+[`infra/resources.bicep`](../infra/resources.bicep); the checked-in
+[`main.bicepparam`](../infra/main.bicepparam) illustrates parameters, not live
+ownership. What-if validates against Azure and writes private local state but
+does not provision the resources.
+
+The group is **`rg-copilot-otel-v1`**, with solution tag `copilot-otel-v1`.
+Resource names have a deterministic, unique per-group suffix. Repeat apply
+reuses the receipt and checks stable resource IDs, workspace identity, immutable
+DCR ID, and endpoint URLs. A provider may show `Modify` during repeat what-if;
+read the real changes rather than assuming every repeat must show `NoChange`.
+Fresh repeat apply preserved all ten checked identity/endpoint/ownership
+fields; see the [v1 evidence record](evidence/v1.md).
+
+Ownership intent is stored in `.local/native-deployment.json`; successful
+deployment outputs are stored in `.local/native-azure.json`. Before persisting
+runtime state, the deployer independently reads the exact LAW ARM resource and
+checks its ID, location, ownership, and customer UUID. On the first fresh
+successful apply, it also records the validated workspace-child baseline in
+`.local/native-workspace-children.json`.
+
+Preserve these private files. Ordinary repeat apply preserves the baseline
+byte-for-byte. Missing baseline state on an existing deployment blocks automatic
+what-if/apply/teardown adoption; do not delete or manufacture a baseline to
+bypass ownership checks. An existing group with the wrong marker, location,
+resource identity, or unexpected inventory is refused, not adopted. The group
+must remain exclusive to this solution.
+
+## Recover an interrupted first apply
+
+Use this advanced recovery **only when both `.local/native-azure.json` and
+`.local/native-workspace-children.json` are absent**, ARM completed successfully,
+and a later LAW/child readback failed, for example with HTTP 503. Preserve
+`.local/native-deployment-result.json` and the original ownership seed.
+Do not delete working receipts to enter recovery; an already verified
+deployment needs no recovery or modification.
+
+The saved ARM result supplies a **candidate**, not an operational receipt.
+`load_recovery_state` rejects unsuccessful/error results, wrong scope/ownership,
+and existing operational state. Never copy candidate outputs directly into
+`native-azure.json`.
+
+After propagation, capture a complete read-only inventory from the verified
+owned LAW. This writes only a private review artifact, not a baseline or an
+operational receipt:
+
+```bash
+python3 - <<'PY'
+import os
+from scripts import native_deploy
+from scripts.common import AppError, LOCAL, write_json
+
+baseline = LOCAL / "native-workspace-children.json"
+if baseline.exists() or baseline.is_symlink():
+    raise AppError("Baseline already exists; this recovery path must not replace it")
+candidate = native_deploy.load_recovery_state(os.environ["AZURE_SUBSCRIPTION_ID"])
+native_deploy.check_account(candidate["subscription_id"])
+if not native_deploy.check_group(candidate, require_complete=True):
+    raise AppError("The complete owned resource group is required")
+native_deploy.verify_workspace_binding(candidate)
+inventory = native_deploy.read_workspace_children(candidate)
+native_deploy.workspace_child_fingerprints(candidate, inventory)
+write_json(LOCAL / "recovery-workspace-child-inventory.json", inventory)
+print("Private inventory captured; stop and review it before initialization")
+PY
+```
+
+**Stop between these commands.** An authorized operator must privately inspect
+the complete captured inventory and approve the exact Azure-default children
+and ownership scope. A familiar saved-search prefix is not approval. Do not
+truncate the inventory, remove rejected entries, or publish its contents.
+
+Only after that review, initialize from the reviewed snapshot:
+
+```bash
+python3 - <<'PY'
+import os
+from scripts import native_deploy
+from scripts.common import LOCAL
+
+candidate = native_deploy.load_recovery_state(os.environ["AZURE_SUBSCRIPTION_ID"])
+reviewed_inventory = native_deploy.private_state(
+    LOCAL / "recovery-workspace-child-inventory.json"
+)
+result = native_deploy.initialize_workspace_child_baseline(candidate, reviewed_inventory)
+print(result["status"])
+PY
+```
+
+The initializer rechecks the exact ownership seed/candidate, enabled account,
+complete owned group, fresh LAW ARM/customer-ID binding, and a fresh complete
+inventory against the reviewed hashes. Only after those checks does it write
+the baseline and verified operational `native-azure.json`. It never overwrites
+an existing baseline and performs no cloud mutations.
+
+After successful initialization, retry normal `native_deploy --what-if` and
+`--apply` with the same explicit subscription and approved identity flags.
+No rebuild or cloud deletion is required for this recovery. On any failure,
+preserve the saved result, seed, inventory, and any written state for private
+investigation; do not reset files or relabel a failed result to bypass checks.
+
+## Verify the new resources
+
+Inspect the dedicated scope without printing credentials:
+
+```bash
+az group show --name rg-copilot-otel-v1 \
+  --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --query '{name:name,location:location,tags:tags}' --output json
+az resource list --resource-group rg-copilot-otel-v1 \
+  --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --query '[].{name:name,type:type,location:location}' --output table
+```
+
+Require LAW, AMW, explicit DCE/DCR, and only expected owned resources, plus
+scoped role assignments. There must be no Application Insights component.
+Check actual DCR destinations, DCE link, endpoint URLs, scoped permissions,
+workspace retention/cap, and table retention privately through ARM/resource
+readback. Azure can create additional service-managed AMW ingestion resources
+in a managed group; these do not replace the explicit DCE/DCR.
+
+The requested LAW configuration is 30-day retention and a 1 GB/day cap.
+**Neither is a total cost ceiling or a guarantee of table-level deletion.**
+Read actual `OTelSpans`, `OTelEvents`, and `OTelResources` analytics/total
+retention. AMW metrics have separate billing, retention, and cardinality costs.
+Record measured findings in [v1 evidence](evidence/v1.md).
+
+Then run [the synthetic scenarios and bounded verification](verification.md),
+followed by [the LAW workbook](visualizations.md). A deployed resource, token,
+or zero CLI exit is not proof of telemetry persistence.
+
+Fresh DCE/DCR provisioning can return HTTP 503 while the ingestion data plane
+becomes ready. Allow propagation, then run a new bounded synthetic CLI session
+with a fresh UUID; require traces, events, and metrics in the backend before
+claiming success. An empty authenticated probe returning HTTP 400 is not health
+proof.
+
+## Cleanup and rebuild
+
+Cleanup is **explicit and irreversible**. Finish all inference and evidence
+review first; keep the receipts and required raw evidence private. Serialize
+lifecycle operations and assess any external consumers before deletion.
+
+The new v1 deployment remains running. Its
+[live read-only teardown prechecks](evidence/v1.md#acceptance-boundaries)
+passed, including the exact baseline for 39 Azure-default saved searches and
+the AMW-managed ingestion resources. The destructive v1 command was not executed
+against this retained stack. Retain resources if an ownership check refuses
+deletion; successful ingestion does not authorize bypassing it.
+
+The v1 teardown command requires the exact group and confirmation:
+
+```bash
+python3 -m scripts.teardown \
+  --subscription "$AZURE_SUBSCRIPTION_ID" \
+  --resource-group rg-copilot-otel-v1 --confirm
+```
+
+`--confirm` authorizes deletion, **not just an audit**. The command checks the
+receipt, account, complete expected group inventory, relevant LAW children, and
+AMW-managed ingestion linkage/inventory before deleting the v1 group through
+Azure CLI. It lets Azure remove the AMW-managed group through the owning AMW's
+lifecycle; it does not directly delete that managed group.
+
+Before accepting the child baseline, teardown freshly reads the exact LAW ARM
+resource and verifies its ID, location, ownership, and customer UUID. A same-name
+replacement workspace must not inherit the prior workspace's deletion
+authorization.
+
+Foreign/custom workspace children, unowned inventory, malformed/incomplete
+responses, and ownership mismatches cause refusal. These checks do not prove
+the absence of every possible external consumer or eliminate concurrent-change
+races. Do not bypass a refusal with broad resource deletion.
+
+Azure-default saved searches must match the **exact saved-search ID set and
+full canonical-JSON hashes** in the private workspace-child baseline. New,
+modified, or missing searches fail the check; a familiar name/prefix or
+default-looking shape alone never grants deletion ownership. Custom tables,
+unexpected nonempty child collections, and incomplete/error inventories also
+fail. Microsoft tables are permitted only when classified as such by the
+provider. Missing or changed baseline state requires authorized private
+inventory review and recovery, not an automatic reset.
+
+The private `.local/native-teardown.json` records exact ownership and the AMW
+managed-group identity before deletion. Its status becomes `deleted` only after
+both groups are confirmed absent. A retry that finds the v1 group already
+absent checks the managed group recorded in the matching teardown receipt and
+refuses completion if that group remains. An `already_absent` result without
+that receipt does not prove managed cleanup.
+
+Local receipts and evidence are preserved, not deleted. If managed cleanup is
+incomplete, investigate and allow Azure's supported lifecycle to finish, then
+retry the same teardown command. Never force-delete the managed group.
+
+For a **clean rebuild after verified deletion**, keep all four lifecycle
+receipts in place: `.local/native-deployment.json`, `.local/native-azure.json`,
+`.local/native-teardown.json`, and `.local/native-workspace-children.json`.
+The deployer requires a matching completed teardown receipt and rechecks that
+the managed group is absent before allowing new workspace customer and immutable
+DCR IDs. Verified recreation replaces the child-baseline binding for the new
+workspace customer UUID; ordinary repeat apply keeps identities, endpoints,
+and the baseline unchanged.
 
 ```bash
 python3 -m scripts.preflight
-python3 -m scripts.deploy --help
-python3 -m scripts.collector --help
-python3 -m scripts.teardown --help
+python3 -m scripts.native_deploy \
+  --subscription "$AZURE_SUBSCRIPTION_ID" --location eastus --what-if
+python3 -m scripts.native_deploy \
+  --subscription "$AZURE_SUBSCRIPTION_ID" --location eastus --apply
 ```
 
-Preflight checks versions and Azure readiness and saves CLI monitoring/environment/permissions help privately under `.local/versions/`. Resolve failures before cloud operations.
+Retain the same approved publisher/operator flags if you used explicit
+identities. Preserve a private copy of the completed deployment's receipts with
+its evidence before apply replaces the runtime outputs, but do not move or
+delete the active receipts to bypass checks. The rebuild retains the ownership
+marker and records the new runtime identities. Never verify an old run against
+the new workspaces. Repeat smoke, verifier, and workbook commands with fresh
+run UUIDs. If Azure's resource deletion/reuse lifecycle blocks recreation,
+resolve that state rather than assuming immediate name reuse or forcing data
+purges.
 
-## Inspect and deploy
-
-`infra/main.bicep` is subscription-scoped and creates the dedicated group `rg-copilot-otel-audit`; its module creates exactly two monitoring resources:
-
-| Resource | Configuration |
-| --- | --- |
-| Log Analytics workspace | `Microsoft.OperationalInsights/workspaces@2023-09-01`, `PerGB2018`, workspace retention 30 days, daily quota 1 GB |
-| Application Insights | `Microsoft.Insights/components@2020-02-02`, web application, linked workspace, `DisableLocalAuth=false` |
-
-Public ingestion and query are enabled. Workspace access using only resource permissions is explicitly disabled. This design needs no DCR, DCE, hosted compute, or Grafana. Azure native OTLP ingestion is a **separate preview architecture** requiring additional resources and a different metrics store; do not substitute its endpoints for this classic exporter.
-
-Compile locally, then use your actual canonical lowercase subscription UUID:
-
-```bash
-az bicep build --file infra/main.bicep --stdout > /dev/null
-SUBSCRIPTION_ID='replace-with-your-actual-subscription-uuid'
-python3 -m scripts.deploy --subscription "$SUBSCRIPTION_ID" --location eastus --what-if
-```
-
-`eastus` is the default, not a required region. Another region is accepted only if available in the selected subscription and supported by both resource providers. Check organizational policy and data residency before choosing. What-if performs account/provider/location checks and ARM validation; it is not a local-only command.
-
-Azure CLI 2.89.0 does not support `--subscription` on `az account list-locations`. The deployer instead uses an explicit ARM GET at `/subscriptions/<subscription-id>/locations?api-version=2022-12-01` to preserve subscription scope; do not replace this with an implicitly selected-account lookup.
-
-After reviewing the proposed changes and authorizing the cost:
-
-```bash
-python3 -m scripts.deploy --subscription "$SUBSCRIPTION_ID" --location eastus --apply
-```
-
-Apply repeats validation and what-if, verifies ownership before mutation, then checks safe outputs/inventory, saves the ownership receipt, and reads back workspace linkage, authentication/network settings, and actual workspace retention/cap. It withholds raw ARM responses and connection strings. What-if rejects deletion, ignored, unsupported, and unknown change types. An existing group without the matching local receipt is **not adopted**; repeat deployment is supported only for the verified receipt-owned group. Missing parent resources, extra generic inventory entries, mismatched ownership tags, changed location, and receipt mismatches are refusal conditions, not reasons to bypass safeguards. These are parent ownership checks: ancillary child APIs are not queried or required for deployment. Generic ARM listing does not expose every provider child/proxy resource, so a passing reuse audit is not an exhaustive ownership inventory or deletion authorization. See [the infrastructure contract](../infra/README.md) for precise checks and recovery limits.
-
-A repeated apply need not show only `NoChange`: provider normalization can produce a `Modify` while resource IDs remain stable. The observed second apply succeeded with one `Modify` and two `NoChange` entries, not duplicate resources. Review the actual preview and readback; do not treat either a successful apply or stable IDs as ingestion proof.
-
-The safe receipt `.local/azure.json` contains only:
-
-```text
-subscription_id
-resource_group
-application_insights_resource_id
-workspace_resource_id
-workspace_customer_id
-deployment_name
-ownership_marker
-location
-```
-
-The connection string belongs **only** in `.local/collector.env`, mode `0600`, as the single unquoted assignment `APPLICATIONINSIGHTS_CONNECTION_STRING=...`. The deployer writes it; do not source the file or paste its contents into shell commands, Bicep parameters, committed configuration, or evidence.
-
-The ownership receipt is retained if later service readback or secret-file writing fails. Its presence does not prove deployment completion or ingestion; an older `collector.env` may remain after failure. An earlier partial failure, before safe outputs/inventory and receipt persistence, can leave cloud resources without a receipt. The scripts then refuse automatic adoption or deletion. An administrator must inspect deployment history and actual resource IDs/tags and recover deliberately outside this CLI; never fabricate ownership evidence to bypass refusal.
-
-Readback reports **only actual workspace** retention and daily cap. The template does not configure, and the deployer does not query or verify, the separate Application Insights cap or individual table retention. Workspace retention is not proof that all `App*` tables delete data after 30 days. Review actual per-table retention and applicable Application Insights limits separately in Azure. A daily cap is not a hard budget or guaranteed cost ceiling.
-
-For this live sample, separate operator ARM reads confirmed **90-day analytics and total retention** on `AppDependencies`, `AppMetrics`, and `AppTraces`, while workspace retention is 30 days and its cap is 1 GB. Separate billing inspection confirmed Application Insights `Basic`, a **100 GB** cap, and **90%** warning threshold; the workspace cap is the lower effective ingestion limit, not a hard cost ceiling. These additional checks are not part of deployer readback. See [the dated configuration evidence](evidence/local-example.md#observed-retention-and-caps); do not infer a 30-day deletion policy from the workspace setting.
-
-The installed CLI billing inspection command is:
-
-```bash
-az monitor app-insights component billing show \
-  --app ai-copilot-otel-qiwrhpw7rm2q4 --resource-group rg-copilot-otel-audit \
-  --subscription "$SUBSCRIPTION_ID"
-```
-
-Substitute the actual recorded component name for another deployment. This read succeeded for the sample without dependency installation; keep subscription and raw runtime details private.
-
-## Validate and start the collector
-
-`collector/image.txt` pins Contrib `0.160.0` by immutable digest. `collector/otelcol.yaml` uses `azure_monitor`, not `azuremonitor`, with `spaneventsenabled: true`. Do not replace the image with `latest`.
-
-Both collector configurations implement the metadata-only/default OTTL privacy transform before trace export. Raw CLI capture=false leaked tool definitions; native content-off is not sufficient. The 2026-09-13 proof confirmed filtered metadata-only output in real collector capture and matching Azure records. Validate the selected configuration and restart an existing collector to load changes; configuration is not hot-reloaded. See [the exact boundary](security-and-data.md#observed-content-off-divergence-and-collector-boundary).
-
-```bash
-python3 -m scripts.collector validate
-python3 -m scripts.collector start
-python3 -m scripts.collector status
-```
-
-Validation uses a synthetic connection string and a network-disabled validation container; Docker may need to fetch the pinned image first. It checks the actual collector binary/configuration, not Azure connectivity. Normal start requires the private connection-string file. Host publications are loopback-only: OTLP HTTP/protobuf at `127.0.0.1:4318`, health at `127.0.0.1:13133/health`. Container listeners use container interfaces; do not expose the host ports publicly.
-
-The owned container runs as the invoking UID/GID, read-only root filesystem, dropped capabilities, no-new-privileges, no restart policy, and a private evidence bind mount. Docker administrators can still inspect secrets. The health probe establishes local readiness only.
-
-For a diagnostic without Azure ingestion, select the explicit local-only configuration:
-
-```bash
-python3 -m scripts.collector validate --local-only
-python3 -m scripts.collector start --local-only
-python3 -m scripts.collector status
-```
-
-Local-only mode uses `collector/otelcol-local.yaml`, with no Azure exporter and no credential injection, not even a synthetic key. It is a file-exporter diagnostic, **not a cloud success path**, and is never selected automatically. State, ownership labels, and command output bind the mode; missing/unknown modes are rejected. Stop an existing collector before switching modes, use fresh run UUIDs, and never relabel or overwrite a receipt. Both modes share the evidence file, so finish verification before restarting any writer.
-
-`.local/collector.json` identifies the owned container and absolute `evidence_path`. The evidence is JSON-lines, not a single JSON document. Run `status` before and after each smoke. At the 8 MiB preflight bound or after rotation, commands refuse further smoke readiness. Stop, privately archive all evidence including rotated `otel-*.json` files, and explicitly clear the archived active files before another run. Rotation has 10 MiB segments and two backups; asynchronous cleanup means this is not a strict instantaneous disk ceiling. A single active file after rotation cannot prove complete capture.
-
-The verification order is **start -> chosen CLI scenario(s), retaining each UUID -> stop -> verify each UUID**. Do not leave a CLI or collector writing the source during verification, and do not restart it against that file until verification finishes. If rotation occurred, follow [immutable-source recovery](verification.md#immutable-source-and-rotation-recovery): consolidate every retained segment into a new restricted immutable file and explicitly update affected manifest evidence paths. Never silently omit rotated segments.
-
-## Stop and audit teardown
-
-**Automated deletion of every existing Azure group is disabled**, even with a matching receipt and `--confirm`. The command below audits the recorded scope; it is not a delete command:
-
-```bash
-python3 -m scripts.collector stop
-python3 -m scripts.teardown --subscription "$SUBSCRIPTION_ID" \
-  --resource-group rg-copilot-otel-audit --confirm
-```
-
-`stop` stops and removes only the receipt-owned local container, preserving evidence. Require `clean_shutdown: true`: the script checks exited state, exit code 0, and no OOM; abnormal exit retains container/state/evidence for diagnosis. A successful Docker stop alone does not establish clean flushing. The teardown audit requires the explicit subscription, exact dedicated group, and matching receipt/account. For an existing group it performs parent ownership checks and then returns nonzero refusal, including when every check passes. `--confirm` confirms audit scope only; it never enables deletion. An already-absent group is the only successful no-op after receipt/account validation. No cloud delete request is issued.
-
-Manual cleanup requires an administrator to inspect the exact recorded group in the Azure portal, assess provider-specific children/proxies and other users' private artifacts beyond generic inventory, confirm ownership and intended data loss, and perform cleanup separately. A passing deployment/reuse audit does not authorize that deletion. If the scope cannot be established, retain the resources and escalate; do not bypass the refusal with a broad shell delete command. See [the detailed audit limitations](../infra/README.md#parent-ownership-checks-and-teardown-refusal).
-
-Nothing cleans up automatically on success. The audit preserves **all cloud resources and local files, including secrets**. After independently confirmed manual cleanup, archive needed evidence privately and remove only deliberately selected owned local artifacts when no longer needed. Resource deletion is not proof of immediate deletion from every retention/archive system.
-
-## References
-
-- [Create a workspace-based Application Insights resource](https://learn.microsoft.com/en-us/azure/azure-monitor/app/create-workspace-resource)
-- [Configure Log Analytics retention](https://learn.microsoft.com/en-us/azure/azure-monitor/logs/data-retention-configure)
-- [Log Analytics daily cap and limitations](https://learn.microsoft.com/en-us/azure/azure-monitor/logs/daily-cap)
-- [Pinned v0.160.0 Azure Monitor exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/v0.160.0/exporter/azuremonitorexporter)
-- [Pinned v0.160.0 file exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/v0.160.0/exporter/fileexporter)
+No command in this guide changes repository visibility, commits, pushes, or
+posts anything publicly.

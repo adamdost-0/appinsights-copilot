@@ -2,8 +2,9 @@
 
 build_workbook(state) returns the Notebook/1.0 object, not an ARM resource.
 The parent deployer JSON-serializes it into properties.serializedData and sets
-properties.sourceId to state["application_insights_resource_id"]. Every query
-explicitly targets state["workspace_resource_id"] and filters the native app.
+properties.sourceId to state["workspace_resource_id"]. Every query targets that
+Log Analytics workspace and selects unassociated native rows (empty _ResourceId),
+then filters the enriched service and any optional user selections.
 
 validate_queries(state) executes the exact panel queries (24h, then selected
 span/event drilldowns). It returns fixed diagnostics, headers and row counts,
@@ -31,22 +32,22 @@ from .common import AppError, LOCAL, ROOT, load_json, run_json, write_json
 PANEL_COLUMNS = {
     "overview": ("ObservedSpans", "Conversations", "LLMCalls", "ToolCalls",
                  "InputTokens", "OutputTokens", "Failures", "ChatSpansMissingTokens",
-                 "SpansMissingConversation"),
-    "sessions": ("RunId", "ConversationId", "Scenario", "Start", "End", "WallTimeMs",
+                 "SpansMissingConversation", "SpansMissingDuration"),
+    "sessions": ("SessionKey", "RunId", "ConversationId", "Scenario", "Start", "End", "WallTimeMs",
                  "LLMCalls", "ToolCalls", "InputTokens", "OutputTokens", "Models",
-                 "Failures", "ChatSpansMissingTokens"),
+                 "Failures", "ChatSpansMissingTokens", "SpansMissingEndTime"),
     "tokens": ("Model", "LLMCalls", "InputTokens", "OutputTokens", "ChatSpansMissingTokens"),
-    "latency": ("TimeGenerated", "LLMCalls", "MeanMs", "P95Ms"),
+    "latency": ("TimeGenerated", "LLMCalls", "MeanMs", "P95Ms", "SpansMissingDuration"),
     "tools": ("ToolName", "ToolType", "ToolCalls", "Failures", "MeanMs", "P95Ms",
-              "TotalMs", "MissingToolName", "MissingToolType"),
+              "TotalMs", "MissingToolName", "MissingToolType", "SpansMissingDuration"),
     "spans": ("Start", "End", "RunId", "ConversationId", "TraceId", "SpanId",
               "ParentSpanId", "Operation", "Model", "ToolName", "DurationMs",
               "OffsetMs", "StatusCode", "Success", "Failed", "SpanKey", "ParentKey"),
     "events": ("TimeGenerated", "EventName", "RunId", "ConversationId", "TraceId", "SpanId"),
 }
 TITLES = {
-    "overview": "Observed native telemetry",
-    "sessions": "Conversations within synthetic runs",
+    "overview": "Observed CLI telemetry",
+    "sessions": "CLI sessions and conversations",
     "tokens": "Chat tokens by model",
     "latency": "Chat latency over time (milliseconds)",
     "tools": "Tool usage, observed errors and duration (milliseconds)",
@@ -54,13 +55,18 @@ TITLES = {
     "events": "Events correlated to the selected spans",
 }
 FILTERS = ("ConversationId", "RunId", "TraceId")
-NOTES = """## Copilot native session telemetry
-This is a synthetic-only view of `github-copilot` spans carrying
-`copilot.audit.scenario` = `metadata-only`, `full-content` or `delegated` and a
-nonempty `copilot.run.id`. It does not attest the producer or establish an audit.
+NOTES = """## Copilot CLI session telemetry
+This view includes ordinary CLI usage from `github-copilot` spans. `RunId`
+(`copilot.run.id`) and `Scenario` (`copilot.audit.scenario`) are optional metadata,
+not inclusion requirements. It does not attest the producer or establish an audit.
+The data source and gallery association are the Log Analytics workspace. This v1
+path selects native rows with empty `_ResourceId`, then scopes by the service
+attribute above. DCR IDs are endpoint provenance in deployment
+receipts, not a server-side resource association on these rows. These are span summaries,
+not a metrics data source or a check of Azure Monitor workspace metric ingestion.
 
-**Filters:** the time picker defaults to 24 hours; all queries are capped at the
-last 24 hours. Optional exact-match text filters apply to every panel: copy
+**Filters:** the time picker defaults to 24 hours; spans and events are capped at
+the last 24 hours. Optional exact-match text filters apply to every panel: copy
 `ConversationId` (`Attributes["gen_ai.conversation.id"]`), `RunId`
 (`ResourceAttributes["copilot.run.id"]`) or `TraceId` from a grid into the
 matching field above. Leave fields blank for all; combine fields with AND.
@@ -69,18 +75,33 @@ The grid search box only filters displayed rows; it does not change other panels
 Expand the span tree to follow `TraceId/SpanId` -> `TraceId/ParentSpanId` parent
 links. `OffsetMs` is relative to the first visible span in its trace.
 
-**Counting:** a session row is `(RunId, ConversationId, Scenario)`, not a run UUID
-masquerading as a conversation ID. Separate subagent conversations stay separate;
-blank conversation IDs remain unknown. Overview conversations count distinct
+**Counting:** `SessionKey` is `conversation:<ConversationId>` when the actual
+`gen_ai.conversation.id` is recorded, otherwise `trace:<TraceId>`. This trace
+fallback does not invent a conversation ID or prove that one trace is a whole
+CLI session. Rows are grouped by `(SessionKey, RunId, ConversationId, Scenario)`;
+optional run/scenario metadata stays visible without excluding ordinary usage.
+Separate subagent conversations stay separate; blank conversation IDs remain
+unknown. If both conversation and trace IDs are missing, `SessionKey` stays blank
+and unidentified spans may share a row. Overview conversations count distinct
 nonempty `(RunId, ConversationId)` pairs. Only `chat` spans contribute token
 totals and LLM calls; root `invoke_agent` totals are not added again. Tool calls
 count `execute_tool` spans. Duplicate trace/span IDs are counted once.
 Token sums include only recorded values; `ChatSpansMissingTokens` exposes missing
 input/output counters, not zero usage. Models prefer response then request model.
+Resource attributes are enriched by `ResourceAttributesId`, without restricting
+resources to the selected span time range. Resource telemetry can arrive later
+than spans: inline attributes remain usable, but spans without the required
+service name are excluded until enrichment arrives. Refresh
+after ingestion; a missing result is not evidence of no activity.
 
 Missing traces may underreport sessions, tokens, tools and errors; time-window
 boundaries and unrecorded parents can produce incomplete trees. Start/end/wall
 time cover observed spans only; concurrent span durations are not wall time.
+`SpansMissingDuration` counts absent, negative or nonfinite durations; these do
+not contribute to latency averages, percentiles or duration sums. LLM/tool call
+counts still include them. Zero duration is valid. Session `WallTimeMs` is unknown
+if any end time is missing or precedes its span start; `SpansMissingEndTime`
+exposes that incompleteness.
 `Failures` counts observed span errors (`Success == false` or error status),
 not an exhaustive audit. Grids show at most 1000 rows; summaries use all scoped
 spans before display limits. There are no cost estimates or pricing assumptions.
@@ -102,7 +123,7 @@ def _validate_state(state: dict) -> None:
     name = r"[A-Za-z0-9][A-Za-z0-9_.()-]*"
     prefix = rf"/subscriptions/{re.escape(state['subscription_id'])}/resourceGroups/{name}/providers/"
     for key, kind in (
-            ("application_insights_resource_id", r"Microsoft\.Insights/components"),
+            ("dcr_resource_id", r"Microsoft\.Insights/dataCollectionRules"),
             ("workspace_resource_id", r"Microsoft\.OperationalInsights/workspaces")):
         if not isinstance(state.get(key), str) or not re.fullmatch(prefix + kind + "/" + name, state[key], re.I):
             raise AppError(f"Workbook state has an invalid or cross-subscription {key}")
@@ -136,14 +157,13 @@ def build_workbook(state: dict) -> dict:
                     "style": "above", "queryType": 0,
                     "resourceType": "microsoft.operationalinsights/workspaces"},
     }, {"type": 1, "name": "scope-and-semantics", "content": {"json": NOTES}}]
-    base = _template("base").replace(
-        "__APP_RESOURCE_ID__", json.dumps(state["application_insights_resource_id"]))
+    base = _template("base")
     for name in PANEL_COLUMNS:
         content = {
             "version": "KqlItem/1.0", "title": TITLES[name], "queryType": 0,
             "resourceType": "microsoft.operationalinsights/workspaces",
             "crossComponentResources": [state["workspace_resource_id"]],
-            "timeContextFromParameter": "TimeRange", "size": 0,
+            "size": 0,
             "query": f"// panel: {name}\n" + base + "\n" + _template(name),
             "visualization": {"tokens": "barchart", "latency": "timechart"}.get(name, "table"),
             "noDataMessage": "No observed native data for these filters; absence is not proof of no activity.",
@@ -237,7 +257,9 @@ def validate_queries(state: dict, *, output_path: Path | None = None) -> dict:
                 f"https://api.loganalytics.azure.com/v1/workspaces/{state['workspace_customer_id']}/query",
                 "--resource", "https://api.loganalytics.io",
                 "--subscription", state["subscription_id"],
-                "--body", json.dumps({"query": query, "timespan": "PT24H"}),
+                # Span/event time bounds are in KQL; a request-wide timespan also
+                # clips resource enrichment that may precede or follow those spans.
+                "--body", json.dumps({"query": query}),
                 "--output", "json",
             ])
         except AppError:
@@ -259,9 +281,10 @@ def validate_queries(state: dict, *, output_path: Path | None = None) -> dict:
     results = {name: execute(name) for name in panels}
     # An observed event supplies a selection that must populate both detail panels.
     candidate = next((row for row in results["events"]
-                      if all(isinstance(row[field], str) and row[field] for field in FILTERS)), None)
+                      if all(isinstance(row[field], str) for field in FILTERS)
+                      and row["TraceId"]), None)
     if candidate:
-        selection = {field: candidate[field] for field in FILTERS}
+        selection = {field: candidate[field] for field in FILTERS if candidate[field]}
         for name in ("spans", "events"):
             execute(name, selection, selected=True)
     else:

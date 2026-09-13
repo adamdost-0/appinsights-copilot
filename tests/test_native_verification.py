@@ -19,8 +19,8 @@ NEGATIVE = "00000000-0000-4000-8000-000000000002"
 SUB = "00000000-0000-4000-8000-000000000003"
 WORKSPACE = "00000000-0000-4000-8000-000000000004"
 PREFIX = f"/subscriptions/{SUB}/resourceGroups/synthetic/providers/"
-APP = PREFIX + "Microsoft.Insights/components/synthetic"
 DCR = PREFIX + "Microsoft.Insights/dataCollectionRules/synthetic"
+DCE = PREFIX + "Microsoft.Insights/dataCollectionEndpoints/synthetic"
 IMMUTABLE = "dcr-" + "a" * 32
 TRACE = "a" * 32
 ROOT_SPAN = "b" * 16
@@ -35,23 +35,26 @@ def state():
     base = f"https://synthetic.eastus-1.ingest.monitor.azure.com/datacollectionRules/{IMMUTABLE}/streams/"
     return {
         "subscription_id": SUB, "workspace_customer_id": WORKSPACE,
+        "resource_group": "synthetic", "location": "eastus", "ownership_marker": RUN,
         "dcr_resource_id": DCR, "dcr_immutable_id": IMMUTABLE,
-        "application_insights_resource_id": APP,
+        "dce_resource_id": DCE,
         "workspace_resource_id": PREFIX + "Microsoft.OperationalInsights/workspaces/synthetic",
         "azure_monitor_workspace_resource_id": PREFIX + "Microsoft.Monitor/accounts/synthetic",
         "traces_endpoint": base + "Microsoft-OTLP-Traces/otlp/v1/traces",
         "metrics_endpoint": base + "Custom-Metrics-Native/otlp/v1/metrics",
+        "logs_endpoint": base + "Microsoft-OTLP-Logs/otlp/v1/logs",
         "metrics_query_endpoint": "https://synthetic.eastus.prometheus.monitor.azure.com",
     }
 
 
 def manifest(scenario="metadata-only"):
     return {
-        "run_id": RUN, "collector_mode": "native-azure", "scenario": scenario,
+        "run_id": RUN, "transport": "native-azure", "scenario": scenario,
+        "privacy_policy": "metadata-only-v1",
         "capture_content": scenario != "metadata-only", "marker": f"SYNTHETIC_AUDIT_{RUN}",
         "started_at": START, "finished_at": FINISH, "exit_code": 0,
         "status": "awaiting_verification", "cli_version": "GitHub Copilot CLI 1.0.84-5.",
-        "dcr_resource_id": DCR, "application_insights_resource_id": APP,
+        "dcr_resource_id": DCR, "dce_resource_id": DCE,
     }
 
 
@@ -65,7 +68,7 @@ def span(operation, span_id, parent="", scenario="metadata-only"):
         "Table": "OTelSpans", "Name": operation + " synthetic", "Kind": "Internal",
         "StatusCode": "OK", "Success": True, "TraceId": TRACE, "SpanId": span_id,
         "ParentSpanId": parent, "Attributes": {"gen_ai.operation.name": operation},
-        "ResourceAttributes": resource(scenario), "_ResourceId": APP,
+        "ResourceAttributes": resource(scenario), "_ResourceId": "",
         "TimeGenerated": START, "EndTime": FINISH, "DurationMs": 60000.0,
     }
 
@@ -82,6 +85,11 @@ def rows(scenario="metadata-only"):
                                           "gen_ai.tool.call.result": marker})
     if scenario == "delegated":
         result.append(span("invoke_agent", CHILD_SPAN, TOOL_SPAN, scenario))
+    event = deepcopy(result[0])
+    event.update(Table="OTelEvents", Name="github.copilot.session.start", Kind="",
+                 StatusCode="", Success=None, ParentSpanId="", EndTime=None, DurationMs=None,
+                 Attributes={"event.name": "github.copilot.session.start"})
+    result.append(event)
     return result
 
 
@@ -95,7 +103,7 @@ def trace_payload(items=None):
 
 def prometheus(value="2", labels=None):
     labels = resource() if labels is None else labels
-    labels = {"microsoft.appresourceid": APP,
+    labels = {"microsoft.appresourceid": DCR,
               "microsoft.amwresourceid": state()["azure_monitor_workspace_resource_id"], **labels}
     result = [] if value is None else [{"metric": labels,
                                         "value": [datetime.fromisoformat(FINISH).timestamp(), value]}]
@@ -118,8 +126,8 @@ class ContractTests(unittest.TestCase):
 
     def test_wrong_run_resource_mode_or_unfinished_manifest_is_rejected(self):
         for key, value in (
-                ("run_id", NEGATIVE), ("collector_mode", "azure"), ("collector_mode", "local-only"),
-                ("application_insights_resource_id", APP + "wrong"),
+                ("run_id", NEGATIVE), ("transport", "azure"), ("transport", "local-only"),
+                ("dce_resource_id", DCE + "wrong"), ("privacy_policy", None),
                 ("dcr_resource_id", DCR + "wrong"), ("status", "running"),
                 ("exit_code", False), ("exit_code", 1), ("finished_at", None),
                 ("finished_at", "2026-09-12T15:00:00Z"), ("capture_content", True),
@@ -130,7 +138,7 @@ class ContractTests(unittest.TestCase):
     def test_cross_subscription_state_and_nonazure_query_endpoints_are_rejected(self):
         for key, value in (
                 ("workspace_resource_id", state()["workspace_resource_id"].replace(SUB, NEGATIVE)),
-                ("azure_monitor_workspace_resource_id", APP),
+                ("azure_monitor_workspace_resource_id", DCR),
                 ("metrics_query_endpoint", "https://private.example/api"),
                 ("metrics_query_endpoint", "http://synthetic.prometheus.monitor.azure.com"),
                 ("metrics_query_endpoint", state()["metrics_query_endpoint"] + "?token=bad"),
@@ -142,8 +150,11 @@ class ContractTests(unittest.TestCase):
         query = native.build_query(manifest(), state())
         for value in ("OTelSpans", "OTelEvents", "OTelResources", "arg_max(TimeGenerated",
                       "ResourceAttributesId", "copilot.run.id", "service.name", "service.version",
-                      RUN, APP, "1.0.84-5", "TraceId, SpanId", START, FINISH):
+                      RUN, "1.0.84-5", "TraceId, SpanId", START, FINISH):
             self.assertIn(value, query)
+        self.assertEqual(query.count('| where _ResourceId == ""'), 3)
+        self.assertNotIn(DCR, query)
+        self.assertNotIn("__RESOURCE_ID__", query)
         self.assertIn("kind=leftouter", query)
         self.assertIn("kind=inner", query)
         self.assertIn("SpanResourceAttributes = take_any(ResourceAttributes) by TraceId, SpanId", query)
@@ -159,7 +170,7 @@ class ContractTests(unittest.TestCase):
         self.assertNotIn("TimeGenerated between", resource_lookup)
         window_spans = query.split("let WindowSpans =", 1)[1].split("let Resources", 1)[0]
         self.assertIn("TimeGenerated between (start_time .. finish_time)", window_spans)
-        self.assertIn("_ResourceId =~ resource_id", window_spans)
+        self.assertIn('_ResourceId == ""', window_spans)
 
     def test_promql_uses_dotted_base_names_quoted_labels_and_fixed_finish_time(self):
         name = "gen_ai.client.token.usage"
@@ -297,7 +308,7 @@ class ProofTests(unittest.TestCase):
         for location in ("resource", "event", "metric"):
             evidence, metrics = rows(), metric_payloads()
             if location == "resource":
-                evidence[0]["ResourceAttributes"]["gen_ai"] = {"tool": {"definitions": []}}
+                evidence[0]["ResourceAttributes"]["gen_ai"] = {"tool": {"definitions": [{"schema": {}}]}}
             elif location == "event":
                 event = deepcopy(evidence[0])
                 event.update(Table="OTelEvents", Kind="", StatusCode="", Success=None,
@@ -315,7 +326,7 @@ class ProofTests(unittest.TestCase):
 
     def test_content_missing_does_not_erase_successful_native_ingestion(self):
         evidence = rows("full-content")
-        del evidence[-1]["Attributes"]["gen_ai.tool.call.result"]
+        del evidence[2]["Attributes"]["gen_ai.tool.call.result"]
         result = self.assess("full-content", trace_rows=evidence)
         self.assertEqual(result["status"], "partial")
         self.assertTrue(result["azure_ingestion_proven"])
@@ -323,21 +334,21 @@ class ProofTests(unittest.TestCase):
 
     def test_tool_arguments_and_result_must_share_actual_tool_span(self):
         evidence = rows("full-content")
-        evidence[0]["Attributes"]["gen_ai.tool.call.result"] = evidence[-1]["Attributes"].pop(
+        evidence[0]["Attributes"]["gen_ai.tool.call.result"] = evidence[2]["Attributes"].pop(
             "gen_ai.tool.call.result")
         self.assertEqual(self.assess("full-content", trace_rows=evidence)["status"], "partial")
 
     def test_event_content_can_be_correlated_to_its_actual_span(self):
         evidence = rows("full-content")
-        event = deepcopy(evidence[-1])
+        event = deepcopy(evidence[2])
         event.update(Table="OTelEvents", Kind="", StatusCode="", Success=None,
                      ParentSpanId="", EndTime=None, DurationMs=None)
-        event["Attributes"] = {"gen_ai.tool.call.result": evidence[-1]["Attributes"].pop("gen_ai.tool.call.result")}
+        event["Attributes"] = {"gen_ai.tool.call.result": evidence[2]["Attributes"].pop("gen_ai.tool.call.result")}
         evidence.append(event)
         self.assertEqual(self.assess("full-content", trace_rows=evidence)["status"], "passed")
 
     def test_wrong_native_identity_is_fatal_not_silently_filtered(self):
-        for key, value in (("_ResourceId", APP + "-wrong"), ("TimeGenerated", "2026-09-12T15:00:00Z"),
+        for key, value in (("_ResourceId", DCR + "-wrong"), ("TimeGenerated", "2026-09-12T15:00:00Z"),
                            ("TraceId", "invalid"), ("SpanId", "0" * 16)):
             evidence = rows()
             evidence[0][key] = value
@@ -350,6 +361,18 @@ class ProofTests(unittest.TestCase):
             evidence = rows()
             evidence[0]["ResourceAttributes"][key] = value
             self.assertEqual(self.assess(trace_rows=evidence)["status"], "failed")
+
+    def test_workspace_scoped_no_app_rows_require_exact_empty_resource_association(self):
+        self.assertEqual(self.assess()["status"], "passed")
+        for table in ("OTelSpans", "OTelEvents"):
+            for association in (DCR, DCE, state()["workspace_resource_id"],
+                                PREFIX + "Microsoft.Insights/components/unexpected", None, " "):
+                evidence = rows()
+                next(row for row in evidence if row["Table"] == table)["_ResourceId"] = association
+                with self.subTest(table=table, association=association):
+                    result = self.assess(trace_rows=evidence)
+                    self.assertEqual(result["status"], "failed")
+                    self.assertFalse(result["azure_ingestion_proven"])
 
     def test_missing_parent_is_pending_but_cycles_and_conflicting_ids_are_fatal(self):
         evidence = rows()
@@ -372,7 +395,7 @@ class ProofTests(unittest.TestCase):
 
     def test_delegation_requires_two_invocations_with_ancestry_not_merely_two_roots(self):
         evidence = rows("delegated")
-        evidence[-1]["ParentSpanId"] = ""
+        evidence[3]["ParentSpanId"] = ""
         result = self.assess("delegated", trace_rows=evidence)
         self.assertFalse(result["azure_ingestion_proven"])
         self.assertEqual(result["counts"]["delegated_agent_children"], 0)
@@ -417,7 +440,9 @@ class ProofTests(unittest.TestCase):
 
     def test_native_metric_azure_resource_labels_must_match_state(self):
         for label in ("microsoft.appresourceid", "microsoft.amwresourceid"):
-            for value in (None, APP + "-wrong"):
+            for value in (None, DCR + "-wrong"):
+                if label == "microsoft.appresourceid" and value is None:
+                    continue
                 metrics = metric_payloads()
                 for statistic in ("count", "sum"):
                     labels = metrics["gen_ai.client.token.usage"][statistic]["data"]["result"][0]["metric"]
@@ -439,6 +464,73 @@ class ProofTests(unittest.TestCase):
                         sample["metric"][key] = sample["metric"][key].lower()
         self.assertEqual(self.assess(metrics=metrics)["status"], "passed")
 
+    def test_app_label_is_optional_without_ai_but_amw_is_exact(self):
+        metrics = metric_payloads()
+        for family in metrics.values():
+            for payload in family.values():
+                for sample in payload["data"]["result"]:
+                    del sample["metric"]["microsoft.appresourceid"]
+        self.assertEqual(self.assess(metrics=metrics)["status"], "passed")
+
+    def test_v1_metadata_allows_only_exact_tool_name_type_objects(self):
+        for value in ([{"name": "view", "type": "function"}],
+                      json.dumps([{"name": "task", "type": "function"}]), []):
+            evidence = rows()
+            evidence[0]["Attributes"]["gen_ai.tool.definitions"] = value
+            with self.subTest(value=value):
+                result = self.assess(trace_rows=evidence)
+                self.assertEqual(result["status"], "passed")
+                self.assertEqual(result["privacy_policy"], "metadata-only-v1")
+                self.assertTrue(result["native_cli_content_privacy_verified"])
+                self.assertEqual(result["counts"]["allowed_tool_metadata_fields"], 1)
+
+    def test_tool_definitions_with_any_additional_content_fail_v1(self):
+        for extra in ("description", "schema", "parameters", "arguments", "result",
+                      "inputSchema", "other"):
+            evidence = rows()
+            evidence[0]["Attributes"]["gen_ai.tool.definitions"] = [
+                {"name": "view", "type": "function", extra: {}}]
+            with self.subTest(extra=extra):
+                self.assertEqual(self.assess(trace_rows=evidence)["status"], "failed")
+        for value in ({"name": "view", "type": "function"}, [{"name": "view"}],
+                      [{"name": {"description": "bad"}, "type": "function"}],
+                      [{"name": "secret prompt with spaces", "type": "function"}],
+                      [{"name": "view", "type": "arbitrary content"}]):
+            evidence = rows()
+            evidence[0]["Attributes"]["gen_ai.tool.definitions"] = value
+            with self.subTest(value=value):
+                self.assertEqual(self.assess(trace_rows=evidence)["status"], "failed")
+
+    def test_explicit_strict_absence_still_fails_name_type_metadata(self):
+        evidence = rows()
+        evidence[0]["Attributes"]["gen_ai.tool.definitions"] = [{"name": "view", "type": "function"}]
+        strict = dict(manifest(), privacy_policy="strict-absence")
+        result = native.assess(strict, state(), evidence, metric_payloads(), prometheus(None), NEGATIVE)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["privacy_policy"], "strict-absence")
+
+    def test_legacy_manifests_never_silently_adopt_v1_privacy(self):
+        old = manifest()
+        del old["privacy_policy"]
+        result = native.assess(old, state(), rows(), metric_payloads(), prometheus(None), NEGATIVE)
+        self.assertEqual(result["status"], "failed")
+
+    def test_missing_native_events_cannot_prove_event_persistence(self):
+        evidence = [row for row in rows() if row["Table"] == "OTelSpans"]
+        result = self.assess(trace_rows=evidence)
+        self.assertEqual(result["status"], "pending")
+        self.assertFalse(result["checks"]["trace_persistence"])
+        self.assertFalse(result["azure_ingestion_proven"])
+
+    def test_metadata_privacy_claim_requires_negative_control(self):
+        result = native.assess(manifest(), state(), rows(), metric_payloads(), None, NEGATIVE)
+        self.assertFalse(result["native_cli_content_privacy_verified"])
+
+    def test_nested_metric_partial_result_cannot_pass(self):
+        metrics = metric_payloads()
+        metrics[native.METRICS[0]]["count"]["data"]["partialError"] = "partial"
+        self.assertEqual(self.assess(metrics=metrics)["status"], "failed")
+
 
 class QueryTests(unittest.TestCase):
     def fake_rest(self, command, **kwargs):
@@ -449,6 +541,7 @@ class QueryTests(unittest.TestCase):
         url = command[command.index("--url") + 1]
         audience = command[command.index("--resource") + 1]
         if "/workspaces/" in url:
+            self.assertEqual(url, f"https://api.loganalytics.azure.com/v1/workspaces/{WORKSPACE}/query")
             self.assertEqual(audience, "https://api.loganalytics.io")
             self.assertEqual(command[command.index("--method") + 1], "POST")
             body = json.loads(command[command.index("--body") + 1])

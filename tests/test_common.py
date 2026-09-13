@@ -12,6 +12,14 @@ from scripts import common
 
 
 class CommonTests(unittest.TestCase):
+    def test_default_state_is_native(self):
+        self.assertEqual(common.AZURE_STATE.name, "native-azure.json")
+
+    def test_encoded_headers_are_redacted_without_token_dictionary(self):
+        text = "Authorization=Bearer%20private%2Btoken,other=safe"
+        self.assertNotIn("private", common.redact(text, {}))
+        self.assertNotIn("private", common.redact("private%2Btoken", {"TOKEN": "private+token"}))
+
     def test_private_json_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "state" / "azure.json"

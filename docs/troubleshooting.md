@@ -1,37 +1,40 @@
-# Troubleshooting
+# Troubleshooting direct OTLP
 
-**Historical collector troubleshooting:** use the [native guide](native-otlp.md)
-for the current collector-free route. Native signals use different endpoints,
-authentication, tables, and histogram queries; do not introduce a collector to
-follow the diagnostic sequence below.
+[Administrator guide](../README.md) | [Verification](verification.md)
 
-Diagnose in this order: **exporter configuration -> real CLI source -> collector -> Azure authentication/policy -> query**. Preserve nonzero exits and bounded timeouts; do not rerun inference or deployment blindly. Keep diagnostics private and never dump a token, environment, full `docker inspect`, connection string, or raw telemetry into an issue.
+Diagnose **local prerequisites -> identity -> exact exporter configuration ->
+completed CLI run -> Azure routing -> backend queries -> workbook**.
+Preserve nonzero exits, bounded timeouts, and private evidence. Do not rerun
+inference or recreate resources blindly.
 
-| Stage | Symptom and safe next check |
+| Symptom | Check and action |
 | --- | --- |
-| Exporter configuration | Read `copilot help monitoring` and the exact harness environment. Confirm OTEL enabled, `otlp-http`, `http/protobuf`, and HTTP loopback endpoint. Remove inherited file-exporter, signal-specific endpoint, and TLS-only overrides in the isolated child; TLS flags can silently disable HTTP. Do not change the normal CLI profile. |
-| Actual source | Check the private manifest's scenario, real version, timestamps, exit/status, run UUID, collector mode, and `evidence_path`. Read complete JSON-lines envelopes filtered by the run resource attribute. Empty or wrong-run evidence cannot prove privacy or delivery. A tool prompt does not prove an `execute_tool` span. |
-| Content-off divergence | Raw CLI 1.0.84-5 emitted nonempty `gen_ai.tool.definitions` despite capture=false. Keep that finding private and explicit. Validate the required metadata-only/default collector transform before both exporters; do not weaken verifier absence checks. Filtered collector evidence proves only the downstream privacy boundary, not native CLI compliance. |
-| Collector configuration | Run `python3 -m scripts.collector validate`. The v0.160.0 component is `azure_monitor`; span events require `spaneventsenabled: true`. A mismatched digest, unknown component, invalid setting, or failing validator must be fixed before smoke. Never switch to `latest` to suppress the error. |
-| Collector process | Run `python3 -m scripts.collector status`. Check owned-container state and host health, not health alone. Docker must be local, host paths bindable, and loopback ports 4318/13133 free. Do not kill an unrelated listener or adopt an unowned container. |
-| Private files | A normal start requires the invoking user's regular `.local/collector.env`, mode `0600`, with one full unquoted connection-string assignment. Do not loosen permissions or use symlinks. A local-only diagnostic requires no cloud secret and proves no Azure intake. |
-| Evidence bounds | An 8 MiB bound or rotated evidence makes readiness fail closed. Stop the owned collector and retain all active/rotated evidence. For verification, consolidate every segment into a new restricted immutable file and explicitly update the manifest evidence path; preserve originals privately. Missing segments mean incomplete evidence, not a pass. |
-| Source changed during verification | Finish CLI execution, stop the collector to flush exports, and prohibit all source writers until every run UUID has been verified. The verifier rejects changing/rotated evidence; do not weaken that check or restart the collector during a query. |
-| Azure authentication | `az account show` must work for the authorized account and explicit subscription. The initial authentication blocker was resolved by authorized login; the current preflight passed. GitHub CLI authentication is unrelated. Do not probe identity endpoints indefinitely or invent credentials. |
-| Region-list CLI compatibility | Azure CLI 2.89.0 rejects `az account list-locations --subscription ...`. The deployer uses explicit ARM GET `/subscriptions/<subscription-id>/locations?api-version=2022-12-01`; preserve this scope instead of falling back silently to a selected account. |
-| Azure policy/permissions | Check registered providers, selected public Azure cloud, supported region, subscription/group/resource permissions, policy denial, and ownership receipt. Scripts do not register providers or grant roles. Local-auth-disabled policy is incompatible with this connection-string path; use an approved alternative design, not a bypass. |
-| Intake | A running collector and file copy do not prove Azure delivery. Check correct linked Application Insights resource, ingestion endpoint/network access, actual caps, and service health privately. Container logs are disabled by design; do not enable raw payload logging as a routine workaround. |
-| Query | Ensure workspace data-plane RBAC, the workspace customer ID (not ARM resource ID), explicit subscription, and Log Analytics token audience. Public query endpoints still require authorization. A missing table can mean no data yet, not success. |
-| Verification timeout | Review private `results.json` reasons and query evidence. Transient throttling/service failures may retry within the deadline; 401/403 and malformed/partial results fail. Investigate before increasing timeout. Late or empty results never count as a pass. |
-| Validation after a successful query | A returned Azure payload is not a proof pass. Source/backend validation failures retain a structured safe reason and nonzero outcome rather than being mislabeled a generic Azure query failure. Diagnose the stated comparison issue instead of retrying authentication. |
-| Fidelity mismatch | Compare source and Azure attributes, IDs, events, metric snapshots. Optional oversized system/tool-definition fields can match only the documented exact prefix at 8192 UTF-8 bytes, not characters; mandatory markers remain strict. Azure can set an empty source root's parent to its 32-hex operation ID, but child parents must match. These narrow conversions do not permit fabricated matches. Metrics need not have an operation ID; cumulative snapshots must not be summed. |
+| Preflight blocked | Resolve the named Python/tool/authentication check. Run `copilot help monitoring` for the installed version. Do not disguise a blocked result as a warning or install a different telemetry architecture. |
+| Deployment authorization/policy failure | Confirm the explicit subscription, public `AzureCloud`, registered providers, region policy, and permissions to deploy and assign roles. Do not weaken policy or silently switch subscriptions. |
+| Ownership refusal | Retain `.local/native-deployment.json` and `.local/native-azure.json`. Check exact group, location, marker, and inventory. Do not forge receipts, adopt same-named resources, or remove unrelated resources to pass. |
+| Missing or changed workspace-child baseline | Preserve `.local/native-workspace-children.json` with the other lifecycle receipts. Existing deployments without it cannot be automatically adopted. Saved-search IDs and full-entry hashes must match exactly; new, modified, or missing searches fail. Require authorized private inventory review, not an automatic baseline reset or name-prefix exception. |
+| Partial deployment | Preserve the ownership seed and private `native-deployment-result.json`. If ARM succeeded but both operational state and baseline are absent after failed readback, use [reviewed first-apply recovery](deployment.md#recover-an-interrupted-first-apply). Never copy candidate outputs into operational state; missing receipts are not proof Azure is empty. |
+| HTTP 401 | Verify a nonexpired Entra token for `https://monitor.azure.com` and `OTEL_EXPORTER_OTLP_HEADERS` with `Authorization=Bearer%20<token>`. GitHub sign-in is unrelated. A parent-shell update cannot refresh a running CLI. |
+| HTTP 403 on ingestion | The identity that obtained the token needs Monitoring Metrics Publisher on the exact DCR. Allow normal RBAC propagation and inspect policy; public endpoint reachability does not imply anonymous ingestion. |
+| HTTP 403 on queries | Check Monitoring Data Reader at AMW and Log Analytics Reader at LAW for the querying identity. A publishing role is not a read role. |
+| Wrong protocol or path | Use HTTPS binary OTLP/HTTP protobuf and the receipt's full per-signal URLs. No gRPC, JSON OTLP, duplicate `/v1/traces`, or guessed stream names. The traces URL uses the logs-ingestion DCE domain but ends in `/otlp/v1/traces`, not `/logs`. |
+| No telemetry despite CLI success | Check OTEL enabled, exporter `otlp-http`, exact endpoint variables and header, CLI diagnostics, DCR routing, retention/cap, and the completed run manifest. Success of inference alone is not export success. |
+| HTTP 503 after fresh deployment | ARM success can precede ingestion data-plane readiness. Allow propagation, then run a new bounded synthetic CLI session with a new UUID and require complete backend proof. Do not mark a metrics-only run passed or use an authenticated empty-payload HTTP 400 as a health check. |
+| Missing events | Span events are exported with traces and stored in `OTelEvents`. No standalone logs exporter is demonstrated. Never send trace or metric payloads to a logs URL. |
+| Metadata-only failure | Tool definitions may contain only exact name/type metadata. Prompt/response/system content, arguments/results, schemas, or extra definition fields fail the policy. Stop; do not relabel the scenario, suppress the failure, or test with real data. |
+| Missing native tables or delayed data | Check the correct LAW, fixed run time window, DCR destinations, and table/schema availability. The verifier may poll retryable missing data within its deadline. Empty results do not establish privacy or intake. |
+| Empty `_ResourceId` on native rows | Expected for this no-Application-Insights path: rows are workspace-scoped, not DCR-associated. Use the exact LAW with LAW reader permissions and service/run correlation; a DCR resource-ID filter would discard valid rows. |
+| Histogram query failure | Use native histogram `histogram_count`/`histogram_sum` against dotted base metric names, correct labels and AMW endpoint. Do not query invented `_count`/`_sum` series or sum cumulative snapshots. Environment overrides are not proof of CLI delta/exponential support. |
+| Verification timeout or partial result | Read the private result reasons. Authentication, malformed responses, partial results, absent required series, and wrong identities must not become empty success. Investigate before extending the timeout. |
+| Tool/delegation not observed | A prompt asking for a tool or child agent is not proof it happened. Require observed operation spans and valid parent relationships. Report unsupported/failed coverage; never inject synthetic telemetry as CLI proof. |
+| Workbook empty | Set a time range containing the run; check LAW association, viewer permissions, selected IDs, and all seven live query results. Blank selectors mean all; multiple selectors combine with AND. |
+| Workbook portal redirects to sign-in | Azure CLI authentication is not browser authentication. Use an authorized browser normally. Do not copy a personal profile or tokens into automation, and do not mark rendering verified from API readback. |
 
-## Failure and cleanup discipline
+The verifier and workbook are independent evidence surfaces: a span-based token
+chart does not prove AMW histogram ingestion. Positive metrics do not establish
+lossless trace export or authenticated UI rendering. Record the precise failure
+stage in [v1 evidence](evidence/v1.md), keeping raw data private.
 
-`run_smoke` invokes real inference and can incur usage. Stop when credentials, tools, privacy, or evidence checks fail. Metadata-only should still produce positive telemetry while omitting gated content fields; no telemetry is not a privacy pass. Content-on should use synthetic inputs only, but system/tool metadata may still appear. Do not publish captured text to explain a failed check.
-
-After an early failed Azure apply, cloud resources may exist before a receipt was saved. Automatic adoption/deletion is refused; an administrator must inspect the exact deployment and group privately and perform deliberate recovery outside this CLI. Never manufacture `.local/azure.json` to defeat ownership checks. If failure occurred after receipt persistence, the retained receipt permits only ownership-checked deployment retry or teardown audit, not a success claim; an old `collector.env` can still be present.
-
-`scripts.teardown` refuses deletion of **every existing group**, even if its parent audit passes and `--confirm` is supplied. Generic ARM listing cannot establish absence of hidden provider/proxy resources; ancillary child APIs are not queried. Only a verified already-absent group is a successful no-op. This nonzero refusal is deliberate, not a retryable deployment glitch.
-
-Use `python3 -m scripts.collector stop` for the owned container. Cloud cleanup needs separate administrator inspection and action through the [manual teardown route](deployment.md#stop-and-audit-teardown). The script deletes no cloud resources or local files. Clean up only specifically identified owned artifacts after deciding what private evidence must be retained.
+For safe cleanup and a new deployment, use the
+[ownership-checked lifecycle](deployment.md#cleanup-and-rebuild); never use a
+generic broad delete to bypass an ownership refusal.

@@ -1,12 +1,16 @@
 Spans
+| extend SessionKey = case(
+    isnotempty(ConversationId), strcat("conversation:", ConversationId),
+    isnotempty(TraceId), strcat("trace:", TraceId), "")
 | summarize Start = min(TimeGenerated), End = max(EndTime),
     LLMCalls = countif(Operation == "chat"), ToolCalls = countif(Operation == "execute_tool"),
     InputTokens = sum(InputTokens), OutputTokens = sum(OutputTokens),
     Models = make_set_if(Model, Operation == "chat"), Failures = countif(Failed),
-    ChatSpansMissingTokens = countif(Operation == "chat" and (isnull(InputTokens) or isnull(OutputTokens)))
-    by RunId, ConversationId, Scenario
-| extend WallTimeMs = datetime_diff("millisecond", End, Start)
-| project RunId, ConversationId, Scenario, Start, End, WallTimeMs, LLMCalls, ToolCalls,
-    InputTokens, OutputTokens, Models, Failures, ChatSpansMissingTokens
+    ChatSpansMissingTokens = countif(Operation == "chat" and (isnull(InputTokens) or isnull(OutputTokens))),
+    SpansMissingEndTime = countif(isnull(EndTime))
+    by SessionKey, RunId, ConversationId, Scenario
+| extend WallTimeMs = iff(SpansMissingEndTime == 0, datetime_diff("millisecond", End, Start), long(null))
+| project SessionKey, RunId, ConversationId, Scenario, Start, End, WallTimeMs, LLMCalls, ToolCalls,
+    InputTokens, OutputTokens, Models, Failures, ChatSpansMissingTokens, SpansMissingEndTime
 | order by Start desc
 | take 1000

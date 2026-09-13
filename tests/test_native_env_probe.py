@@ -423,7 +423,7 @@ class ExecutionTests(unittest.TestCase):
         self.local = Path(self.temporary.name) / ".local"
         self.addCleanup(patch.stopall)
         patch.object(probe, "LOCAL", self.local).start()
-        self.authenticate = patch.object(probe.run_smoke, "authentication_token",
+        self.authenticate = patch.object(probe.synthetic_session, "authentication_token",
                                          return_value="synthetic-github-secret").start()
         patch.object(probe.shutil, "which", return_value="/synthetic/bin/copilot").start()
         self.version = patch.object(probe, "run", return_value=subprocess.CompletedProcess(

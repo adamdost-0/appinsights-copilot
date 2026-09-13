@@ -1,7 +1,8 @@
 // Native tables only. Missing tables remain errors, never fabricated empty rows.
 // Schema: https://learn.microsoft.com/azure/azure-monitor/reference/tables/otelspans
+// No-App v1 rows are workspace-scoped and have exactly empty _ResourceId.
+// The query API workspace customer ID is bound to its ARM ID by ARM readback.
 let run_id = __RUN_ID__;
-let resource_id = __RESOURCE_ID__;
 let scenario = __SCENARIO__;
 let cli_version = __VERSION__;
 let start_time = datetime(__START__);
@@ -9,12 +10,12 @@ let finish_time = datetime(__FINISH__);
 let WindowSpans = materialize(
     OTelSpans
     | where TimeGenerated between (start_time .. finish_time)
-    | where _ResourceId =~ resource_id);
+    | where _ResourceId == "");
 // Resource metadata may arrive after span completion; bound its lookup by the
-// IDs of the time-scoped application spans, not by the metadata arrival time.
+// IDs of the time-scoped workspace spans, not by the metadata arrival time.
 let Resources =
     OTelResources
-    | where _ResourceId =~ resource_id
+    | where _ResourceId == ""
     | where Id in (WindowSpans | project ResourceAttributesId)
     | summarize arg_max(TimeGenerated, Attributes) by Id
     | project ResourceAttributesId = Id, JoinedResourceAttributes = Attributes;
@@ -34,7 +35,7 @@ union
     (RunSpans),
     (OTelEvents
     | where TimeGenerated between (start_time .. finish_time)
-    | where _ResourceId =~ resource_id
+    | where _ResourceId == ""
     | join kind=inner (
         RunSpans
         | summarize SpanResourceAttributes = take_any(ResourceAttributes) by TraceId, SpanId

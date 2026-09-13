@@ -14,10 +14,20 @@ DCR = "dcr-" + "a" * 32
 ARM = f"/subscriptions/{UUID}/resourceGroups/native-test/providers/Microsoft.Insights"
 STATE = {
     "subscription_id": UUID,
+    "resource_group": "native-test",
+    "location": "eastus",
+    "ownership_marker": UUID,
     "dcr_resource_id": ARM + "/dataCollectionRules/native-test",
+    "dce_resource_id": ARM + "/dataCollectionEndpoints/native-test",
     "dcr_immutable_id": DCR,
-    "application_insights_resource_id": ARM + "/components/native-test",
+    "workspace_resource_id": ARM.replace("Microsoft.Insights", "Microsoft.OperationalInsights") + "/workspaces/native-test",
+    "azure_monitor_workspace_resource_id": ARM.replace("Microsoft.Insights", "Microsoft.Monitor") + "/accounts/native-test",
+    "metrics_query_endpoint": "https://example.eastus.prometheus.monitor.azure.com",
     "workspace_customer_id": UUID,
+    "logs_endpoint": (
+        f"https://example.eastus-1.ingest.monitor.azure.com/datacollectionRules/{DCR}"
+        "/streams/Microsoft-OTLP-Logs/otlp/v1/logs"
+    ),
     "traces_endpoint": (
         f"https://example.eastus-1.ingest.monitor.azure.com/datacollectionRules/{DCR}"
         "/streams/Microsoft-OTLP-Traces/otlp/v1/traces"
@@ -56,7 +66,7 @@ class NativeSmokeTests(unittest.TestCase):
                     native_smoke.validate_state(state)
 
     def test_rejects_cross_subscription_or_wrong_resource_types(self):
-        for field in ("dcr_resource_id", "application_insights_resource_id"):
+        for field in ("dcr_resource_id", "dce_resource_id"):
             for value in ("/invalid", STATE[field].replace(UUID, UUID[:-1] + "2")):
                 with self.subTest(field=field, value=value):
                     with self.assertRaises(AppError):
@@ -74,6 +84,18 @@ class NativeSmokeTests(unittest.TestCase):
         self.assertEqual(env["OTEL_EXPORTER_OTLP_METRICS_PROTOCOL"], "http/protobuf")
         self.assertNotIn("microsoft.applicationId", env["OTEL_RESOURCE_ATTRIBUTES"])
         self.assertEqual(env["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"], "false")
+        self.assertNotIn("OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE", env)
+        self.assertNotIn("OTEL_EXPORTER_OTLP_METRICS_DEFAULT_HISTOGRAM_AGGREGATION", env)
+
+    def test_rejects_removed_application_insights_state(self):
+        with self.assertRaises(AppError):
+            native_smoke.validate_state({**STATE, "application_insights_resource_id": ARM + "/components/old"})
+
+    def test_native_authentication_is_mandatory(self):
+        for github, azure in (("", "azure"), ("github", ""), ("github", "bad\nheader")):
+            with self.subTest(github=github, azure=azure), self.assertRaises(AppError):
+                native_smoke.native_environment(Path("/tmp/isolated"), UUID, "metadata-only",
+                                               github, azure, STATE)
 
     def test_native_environment_does_not_inherit_private_configuration(self):
         with patch.dict("os.environ", {
@@ -123,9 +145,17 @@ class NativeSmokeTests(unittest.TestCase):
                 launch.return_value.stderr = ""
                 manifest = native_smoke.execute("metadata-only")
             command = launch.call_args.args[0]
+            self.assertEqual(run.call_args.kwargs["cwd"], launch.call_args.kwargs["cwd"])
+            version_env = run.call_args.kwargs["env"]
+            self.assertEqual(version_env["HOME"], launch.call_args.kwargs["env"]["HOME"])
+            self.assertEqual(version_env["COPILOT_OTEL_ENABLED"], "false")
+            self.assertEqual(version_env["OTEL_SDK_DISABLED"], "true")
             self.assertIn("--secret-env-vars=COPILOT_GITHUB_TOKEN,OTEL_EXPORTER_OTLP_HEADERS",
                           command)
-            self.assertEqual(manifest["collector_mode"], "native-azure")
+            self.assertEqual(manifest["transport"], "native-azure")
+            self.assertEqual(manifest["privacy_policy"], "metadata-only-v1")
+            self.assertNotIn("collector_mode", manifest)
+            self.assertNotIn("application_insights_resource_id", manifest)
             self.assertEqual(manifest["status"], "awaiting_verification")
             self.assertFalse(manifest["azure_ingestion_proven"])
             self.assertNotIn("evidence_path", manifest)
@@ -137,12 +167,67 @@ class NativeSmokeTests(unittest.TestCase):
                     self.assertNotIn("github-secret", path.read_text())
 
     def test_invalid_timeout_or_scenario_never_launches(self):
-        for scenario, timeout in (("metadata-only", 0), ("real-project", 180)):
+        for scenario, timeout in (("metadata-only", 0), ("real-project", 180),
+                                  ("metadata-only", True), ("metadata-only", 3601),
+                                  ("metadata-only", float("nan"))):
             with self.subTest(scenario=scenario, timeout=timeout):
                 with patch.object(native_smoke, "run_session") as launch:
                     with self.assertRaises(AppError):
                         native_smoke.execute(scenario, timeout)
                 launch.assert_not_called()
+
+    def test_strict_absence_is_selectable_and_written_into_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(native_smoke, "LOCAL", Path(directory)), \
+                 patch.object(native_smoke, "load_json", return_value=STATE), \
+                 patch.object(native_smoke, "monitor_token", return_value="azure"), \
+                 patch.object(native_smoke, "authentication_token", return_value="github"), \
+                 patch.object(native_smoke, "run") as run, \
+                 patch.object(native_smoke, "run_session") as launch:
+                run.return_value.stdout = "GitHub Copilot CLI 1.0.84-5.\n"
+                launch.return_value.returncode = 0
+                launch.return_value.stdout = launch.return_value.stderr = ""
+                result = native_smoke.execute("metadata-only", privacy_policy="strict-absence")
+        self.assertEqual(result["privacy_policy"], "strict-absence")
+        self.assertFalse(result["capture_content"])
+
+    def test_invalid_policy_never_launches_or_fetches_token(self):
+        with patch.object(native_smoke, "monitor_token") as token:
+            with self.assertRaises(AppError):
+                native_smoke.execute("metadata-only", privacy_policy="allow-all")
+        token.assert_not_called()
+
+    def test_missing_version_is_an_explicit_failure_before_inference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(native_smoke, "LOCAL", Path(directory)), \
+                 patch.object(native_smoke, "load_json", return_value=STATE), \
+                 patch.object(native_smoke, "monitor_token", return_value="azure"), \
+                 patch.object(native_smoke, "authentication_token", return_value="github"), \
+                 patch.object(native_smoke, "run") as run, \
+                 patch.object(native_smoke, "run_session") as launch:
+                run.return_value.stdout = ""
+                with self.assertRaisesRegex(AppError, "version"):
+                    native_smoke.execute("metadata-only")
+                launch.assert_not_called()
+
+    def test_unrecognized_version_cannot_persist_credentials_or_launch_inference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            with patch.object(native_smoke, "LOCAL", output), \
+                 patch.object(native_smoke, "load_json", return_value=STATE), \
+                 patch.object(native_smoke, "monitor_token", return_value="azure-secret"), \
+                 patch.object(native_smoke, "authentication_token", return_value="github-secret"), \
+                 patch.object(native_smoke, "run") as run, \
+                 patch.object(native_smoke, "run_session") as launch:
+                run.return_value.stdout = "unexpected azure-secret github-secret"
+                launch.return_value.stdout = launch.return_value.stderr = ""
+                launch.return_value.returncode = 0
+                with self.assertRaisesRegex(AppError, "version"):
+                    native_smoke.execute("metadata-only")
+                launch.assert_not_called()
+            for path in output.rglob("*.json"):
+                self.assertNotIn("azure-secret", path.read_text())
+                self.assertNotIn("github-secret", path.read_text())
 
     def test_session_failure_redacts_raised_error_and_persists_failed_manifest(self):
         import json

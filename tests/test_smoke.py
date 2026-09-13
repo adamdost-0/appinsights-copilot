@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from scripts import run_smoke
+from scripts import synthetic_session as run_smoke
 from scripts.common import AppError
 
 RUN_ID = "00000000-0000-4000-8000-000000000001"
@@ -65,20 +65,22 @@ class SmokeTests(unittest.TestCase):
         with patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "synthetic"}):
             self.assertEqual(run_smoke.authentication_token(), "synthetic")
 
-    def test_evidence_outside_private_directory_is_refused(self):
-        with self.assertRaises(AppError):
-            run_smoke.evidence_file({"evidence_path": "/etc/passwd"})
+    def test_legacy_collector_execution_is_removed(self):
+        self.assertFalse(hasattr(run_smoke, "execute"))
+        self.assertFalse(hasattr(run_smoke, "evidence_file"))
+        self.assertFalse(hasattr(run_smoke, "main"))
+        root = Path(__file__).resolve().parent.parent
+        self.assertFalse((root / "scripts" / "run_smoke.py").exists())
 
     def test_uuid_is_validated_before_environment_construction(self):
         with self.assertRaises(AppError):
             run_smoke.child_environment(Path("/tmp/isolated"), "invalid", "full-content", "x", {})
 
-    def test_missing_collector_mode_is_not_assumed_azure(self):
-        with patch.object(run_smoke, "load_json", return_value={}):
-            with patch.object(run_smoke, "run") as launch:
-                with self.assertRaisesRegex(AppError, "mode"):
-                    run_smoke.execute("metadata-only")
-        launch.assert_not_called()
+    def test_isolation_sets_data_and_state_roots_without_export_destination(self):
+        env = run_smoke.child_environment(Path("/tmp/isolated"), RUN_ID, "metadata-only", "token", {})
+        self.assertEqual(env["XDG_DATA_HOME"], "/tmp/isolated/.local/share")
+        self.assertEqual(env["XDG_STATE_HOME"], "/tmp/isolated/.local/state")
+        self.assertNotIn("OTEL_EXPORTER_OTLP_ENDPOINT", env)
 
 
 if __name__ == "__main__":

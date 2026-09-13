@@ -1,5 +1,6 @@
 """Read-only readiness checks; never signs in, installs or deploys."""
 
+import argparse
 import json
 import shutil
 import sys
@@ -31,11 +32,12 @@ def azure_check() -> dict:
             "detail": "Authenticated; deployment still requires explicit --subscription"}
 
 
-def main() -> int:
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.parse_args(argv)
     checks = [
         tool_check("az", ["version", "--output", "json"]),
         tool_check("az", ["bicep", "version"]),
-        tool_check("docker", ["version", "--format", "{{.Client.Version}} {{.Server.Version}}"]),
         tool_check("copilot", ["--version"]),
         azure_check(),
     ]

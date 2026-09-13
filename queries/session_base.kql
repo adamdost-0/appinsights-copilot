@@ -1,5 +1,4 @@
 // Shared by every panel; braces are literal KQL, not Python format placeholders.
-let resource_id = __APP_RESOURCE_ID__;
 let selected_conversation = base64_decode_tostring('{ConversationId:base64}');
 let selected_run = base64_decode_tostring('{RunId:base64}');
 let selected_trace = base64_decode_tostring('{TraceId:base64}');
@@ -7,11 +6,12 @@ let WindowSpans = materialize(
     OTelSpans
     | where TimeGenerated between (ago(24h) .. now())
     | where TimeGenerated {TimeRange}
-    | where _ResourceId =~ resource_id
+    | where _ResourceId == ""
     | summarize arg_max(TimeGenerated, *) by TraceId, SpanId);
 let Resources =
     OTelResources
-    | where _ResourceId =~ resource_id
+    | where _ResourceId == ""
+    | where isnotempty(Id)
     | where Id in (WindowSpans | project ResourceAttributesId)
     | summarize arg_max(TimeGenerated, Attributes) by Id
     | project ResourceAttributesId = Id, JoinedResourceAttributes = Attributes;
@@ -25,7 +25,6 @@ let Spans = materialize(
         ConversationId = tostring(Attributes["gen_ai.conversation.id"]),
         Scenario = tostring(ResourceAttributes["copilot.audit.scenario"]),
         Operation = tostring(Attributes["gen_ai.operation.name"])
-    | where isnotempty(RunId) and Scenario in ("metadata-only", "full-content", "delegated")
     | where isempty(selected_conversation) or ConversationId == selected_conversation
     | where isempty(selected_run) or RunId == selected_run
     | where isempty(selected_trace) or TraceId == selected_trace
@@ -36,6 +35,9 @@ let Spans = materialize(
         InputTokens = iff(Operation == "chat", tolong(Attributes["gen_ai.usage.input_tokens"]), long(null)),
         OutputTokens = iff(Operation == "chat", tolong(Attributes["gen_ai.usage.output_tokens"]), long(null)),
         Failed = coalesce(Success == false, false) or StatusCode in~ ("error", "2", "STATUS_CODE_ERROR")
+    | extend DurationMs = iff(isfinite(todouble(DurationMs)) and todouble(DurationMs) >= 0,
+                              todouble(DurationMs), real(null)),
+        EndTime = iff(EndTime >= TimeGenerated, EndTime, datetime(null))
     | project TimeGenerated, EndTime, DurationMs, TraceId, SpanId, ParentSpanId,
         RunId, ConversationId, Scenario, Operation, Model, ToolName, ToolType,
         InputTokens, OutputTokens, StatusCode, Success, Failed);

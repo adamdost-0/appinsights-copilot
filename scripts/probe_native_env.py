@@ -3,6 +3,9 @@
 Run ``python3 -m scripts.probe_native_env --run-cli`` to spend two synthetic CLI
 inferences (JSON, then protobuf). Only a temporary loopback HTTP recording fixture
 receives telemetry; nothing is forwarded and Azure ingestion is never proven.
+Delta/exponential preferences are diagnostic inputs only: CLI 1.0.84-5 was
+observed ignoring them and emitting cumulative explicit histograms. They are not
+a runtime workaround and do not establish Azure acceptance or rejection.
 Raw evidence is sensitive despite metadata-only capture and belongs only in the
 private .local/native-probe/<uuid> directory. Do not publish raw records.
 
@@ -27,7 +30,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from .common import AppError, LOCAL, private_dir, run, run_session, write_private
-from . import run_smoke
+from . import synthetic_session
 
 PROTOCOLS = ("http/json", "http/protobuf")
 CONTENT_TYPES = {"http/json": "application/json", "http/protobuf": "application/x-protobuf"}
@@ -77,7 +80,7 @@ def probe_environment(home: Path, run_id: str, token: str, protocol: str,
     if protocol not in PROTOCOLS:
         raise AppError("Only the fixed HTTP JSON/protobuf protocols are supported")
     urls = endpoint_urls(base_url)
-    env = run_smoke.child_environment(home, run_id, "metadata-only", token, inherited)
+    env = synthetic_session.child_environment(home, run_id, "metadata-only", token, inherited)
     env.update({
         "OTEL_EXPORTER_OTLP_ENDPOINT": urls["generic"],
         "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": urls["traces"],
@@ -508,7 +511,7 @@ def _scenario(output: Path, protocol: str, token: str, executable: str,
                     errors.append("cli_version_unavailable")
                     internal_error = True
                 if version is not None:
-                    command = run_smoke.command_for("metadata-only", f"SYNTHETIC_AUDIT_{run_id}", work)
+                    command = synthetic_session.command_for("metadata-only", f"SYNTHETIC_AUDIT_{run_id}", work)
                     command[0] = executable
                     try:
                         run_session(command, env=env, cwd=work, timeout=timeout_seconds)
@@ -547,7 +550,7 @@ def execute(*, run_cli: bool = False, timeout_seconds: int = 180) -> dict:
     output = private_dir(LOCAL / "native-probe" / run_id)
     report = {
         "run_id": run_id, "report_path": str(output / "report.json"),
-        "started_at": run_smoke.now(), "finished_at": None,
+        "started_at": synthetic_session.now(), "finished_at": None,
         "purpose": "loopback_protocol_env_diagnostic_only",
         "azure_ingestion_proven": False, "native_metrics_configuration_supported": False,
         "cli_version": None, "status": "running", "exit_code": None,
@@ -563,7 +566,7 @@ def execute(*, run_cli: bool = False, timeout_seconds: int = 180) -> dict:
         report["errors"].append("copilot_executable_not_found")
     else:
         try:
-            token = run_smoke.authentication_token()
+            token = synthetic_session.authentication_token()
         except AppError:
             report["errors"].append("github_authentication_failed")
         else:
@@ -591,7 +594,7 @@ def execute(*, run_cli: bool = False, timeout_seconds: int = 180) -> dict:
         report["errors"].append("cli_version_changed")
         status = "internal_error"
     report.update(
-        status=status, exit_code=EXIT_CODES[status], finished_at=run_smoke.now(),
+        status=status, exit_code=EXIT_CODES[status], finished_at=synthetic_session.now(),
         native_metrics_configuration_supported=(
             status not in ("internal_error", "transport_error") and len(scenarios) == len(PROTOCOLS)
             and all(item["native_metrics_configuration_supported"] for item in scenarios)),

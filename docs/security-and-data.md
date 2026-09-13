@@ -1,67 +1,152 @@
-# Security and data handling
+# Security, privacy, and data handling
 
-The synthetic-only consent below applies to both experiments. Collector
-transforms and connection-string controls describe the **historical** path;
-the [native route](native-otlp.md) instead uses Entra headers and no collector.
-Its [measured content-off result](evidence/native-example.md#content-and-privacy)
-distinguishes retained tool name/type metadata from a prompt or argument leak.
+[Administrator guide](../README.md) | [Verification](verification.md)
 
-## Approved capture scope
+## Synthetic-only scope
 
-Full-content capture is approved **only for fabricated inputs in isolated synthetic sessions**. The harness creates a temporary `HOME`, `COPILOT_HOME`, and workdir, uses a synthetic fixture/marker, suppresses normal custom instructions and built-in MCPs, and restricts tools. It must not load normal projects, personal configuration, private repositories, plugins, skills, or custom MCPs. Do not broaden this consent to another user's data or production sessions.
+Tests must never use normal-user source code, conversation history, personal
+Copilot configuration, private repositories, or existing work sessions.
+The harness creates isolated temporary homes and working directories, passes
+only the required environment, disables custom instructions and built-in MCPs,
+and restricts tools to the selected synthetic scenario. It does not copy the
+normal user's profile. These are scope controls, not an operating-system sandbox.
 
-`metadata-only` requests disabled message capture; `full-content` and `delegated` enable it. The observed CLI does not fully honor the content-off contract: see the divergence below. Capture-on can include prompts, responses, tool arguments/results, system instructions, or tool definitions/metadata depending on the installed CLI. Even metadata can disclose model names, timings, identifiers, paths, or environment context. A synthetic prompt is not proof that the surrounding capture contains no sensitive information.
+`metadata-only` is the default privacy posture.
+`full-content` and `delegated` are **explicit opt-ins to content capture for
+fabricated, isolated examples only**. Delegated testing also enables content
+capture; its name must not be mistaken for a metadata-only mode.
+Capture-on can include prompts, responses, system instructions, tool definitions,
+arguments, and results. It is not approval to export production/user content.
 
-These controls reduce accidental exposure; they are not an OS security sandbox or a guarantee that generated tool requests are safe. Optional sandbox/hooks/MCP/skills/compaction coverage must remain explicitly unverified unless safely exercised and observed. The full-content workflow is not permission to inspect private host files.
+[Normal metadata-only onboarding](usage.md) is a separate, organizationally
+approved operational recipe. It is not executed as a test and does not authorize
+content capture. Approval for ordinary use never permits normal-user code or
+history to be included in the synthetic evidence.
 
-## Observed content-off divergence and collector boundary
+## Metadata-only policy
 
-The coordinator found nonempty `gen_ai.tool.definitions` on chat/invocation spans in the raw CLI 1.0.84-5 metadata-only file diagnostic, despite explicit `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false`. The reported field length was 841; the checked capture had no other known gated fields or actual authentication token. This is an upstream privacy-control discrepancy, not a metadata-only privacy pass. Raw diagnostic evidence remains private.
+Set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false`.
+Native CLI telemetry can still contain tool **name/type metadata** in
+`gen_ai.tool.definitions`. The v1 default permits only entries with the exact
+`name` and `type` fields: `type` must be `function`, and `name` must be a bounded
+tool identifier matching `[A-Za-z_][A-Za-z0-9_.-]{0,127}`. Descriptions, schemas,
+arguments, results, or nested content are not allowed. Empty telemetry is not a
+privacy pass.
 
-The implemented defense-in-depth mitigation is a collector OTTL transform that removes six known gated attributes from spans and span events for metadata-only/default traffic, preserving them only for explicitly labeled `full-content` or `delegated` synthetic scenarios: `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.system_instructions`, `gen_ai.tool.definitions`, `gen_ai.tool.call.arguments`, and `gen_ai.tool.call.result`. It runs **before both Azure and local evidence trace exporters**. The 2026-09-13 metadata-only proof confirmed absence of all six fields in post-transform source and matching Azure records, without establishing native CLI compliance.
-
-Only the resource attribute `copilot.audit.scenario` selects the explicit content-on exemptions. Missing/unknown values remain filtered; span/event-local values and a `copilot.scenario` alias cannot opt out. Processing errors propagate instead of silently bypassing the transform. This exact-key filter does not sanitize resource attributes, metrics, arbitrary keys, or all possible secrets. Configuration changes require an explicit collector restart.
-
-With that transform active, the verifier's source is **post-transform collector evidence**, not raw CLI output. A metadata-only pass would establish absence of the checked fields at the downstream transport boundary and in matching Azure records, not native CLI compliance or absence from upstream process memory/raw diagnostics. Keep strict verifier absence checks; do not permit tool definitions just to make the scenario pass. Scenario labels are not authenticated consent, and six known fields are not a general-purpose secret scrubber.
-
-## Trust boundaries and authentication
-
-| Boundary | Security implication |
+| Field | Metadata-only requirement |
 | --- | --- |
-| CLI to local collector | OTLP HTTP/protobuf on host loopback 4318; no remote listener should be exposed. Loopback does not authenticate other local processes. |
-| Collector health | Loopback 13133 reports local readiness, not ingestion or identity. |
-| Collector to Application Insights | Uses a sensitive connection string with local authentication enabled (`DisableLocalAuth=false`). Telemetry is not identity-bound or tamperproof; an authorized ingestion key is not proof of who produced an event. |
-| Azure query | Public endpoints still require authenticated, authorized data-plane RBAC. Workspace resource-permission access is disabled; provision suitable workspace access separately. |
-| Docker and host | Docker administrators and privileged host users can inspect container environment/mounted evidence. Container hardening and file modes do not defend against those administrators. |
+| `gen_ai.input.messages` | Absent |
+| `gen_ai.output.messages` | Absent |
+| `gen_ai.system_instructions` | Absent |
+| `gen_ai.tool.call.arguments` | Absent |
+| `gen_ai.tool.call.result` | Absent |
+| `gen_ai.tool.definitions` | Absent or exact name/type-only metadata; no schema/content |
 
-The collector is pinned to an immutable Contrib v0.160.0 image digest. Its Azure Monitor exporter is beta. Pinning improves repeatability, not perpetual security: dependency updates require deliberate config validation and repeat verification. Native Azure OTLP preview uses a different architecture; do not assume its identity, network, retention, or metric-store properties apply here.
+The v1 synthetic runtime/verifier enforces this defined policy on returned
+telemetry; the fresh metadata-only run [passed](evidence/v1.md) with two allowed
+tool-metadata fields and no forbidden content fields. It does not continuously
+validate ordinary sessions. A stricter organizational policy
+requiring all six keys to be absent is **different** and must not be reported
+as passed just because the v1 name/type allowance passes.
 
-## Secrets and private artifacts
+The runner records `--privacy-policy metadata-only-v1` by default. To explicitly
+evaluate the stronger policy, use `--privacy-policy strict-absence` on a new
+metadata-only smoke run and verify its own UUID. This changes validation, not
+what the CLI exports, and may fail on otherwise permitted tool metadata. Do not
+change a completed run's manifest to switch policies.
 
-All `.local/` runtime state is ignored and private. Runtime files are created with `0600` and private directories with `0700`. The pinned file exporter's rotation can create `0644` files inside the protected `0700` directory; status fails on rotation and stop restores evidence file modes to `0600`. Do not treat the directory protection as optional or copy rotated files to shared locations without checking permissions. Do not chmod shared directories world-writable, commit runtime files, or copy them into public build artifacts.
+There is no intermediary privacy filter on the direct route. Backend validation
+detects a violation **after data has been sent**; it cannot retract that data or
+prove what was absent from memory or pre-ingestion traffic. On any content
+failure, stop tests, keep diagnostics private, investigate the exact installed
+CLI, and use the approved data-remediation process. Do not weaken validation or
+enable content capture to make a metadata-only check succeed.
 
-The Application Insights connection string is stored only in `.local/collector.env`, not in Bicep outputs, the safe Azure receipt, CLI configuration, prompts, or documentation. The collector needs it at runtime; avoid printing its container environment.
+Metadata itself can disclose identities, model/tool names, timing, infrastructure
+details, or resource attributes. Treat telemetry as organizational data even
+when message capture is disabled. Named-field checks are not a universal secret
+scanner, DLP system, or permission to add arbitrary resource attributes.
 
-GitHub authentication requires a separately authorized `gh auth login` or a supported token environment variable; the harness internally reads `gh auth token` when no supported variable is set. It passes the token only in the child environment and never saves it. Never write a GitHub token into `.env`, `.local/collector.env`, or any collector configuration. Do not echo tokens, enable shell tracing around credentials, put tokens in command arguments, or paste usernames/token output into evidence. Redaction is defense in depth, not proof that an arbitrary raw payload is safe.
+## Identity and access
 
-`.local/azure.json` contains resource identifiers and an ownership marker, not credentials; these can still reveal organizational metadata and need not be public. `.local/collector.json` points to private JSON-lines evidence. Run manifests, CLI stdout/stderr, source evidence, and raw query responses remain private. Only fabricated fixtures and manually reviewed, sanitized evidence belong in version control.
+| Identity | Minimum telemetry role and scope |
+| --- | --- |
+| Sender | Monitoring Metrics Publisher on the explicit DCR |
+| Metrics auditor | Monitoring Data Reader on the Azure Monitor workspace |
+| Trace/event auditor | Log Analytics Reader on the Log Analytics workspace |
+| Deployer | Authorized resource deployment and scoped role-assignment permissions |
+| Workbook viewer | Workbook read access plus authorized access to its LAW data |
 
-## Retention, cost, and deletion
+Separate publishing and auditing identities in an enterprise design. A sender
+does not need read access just to export. The example's combined operator roles
+are for bounded evaluation, not a least-privilege enterprise identity blueprint.
+Workbook filters are not an authorization boundary.
 
-The workspace is configured for `PerGB2018`, 30-day workspace retention, and a 1 GB daily workspace quota. **This does not establish that every Application Insights table deletes data after 30 days.** Table-specific analytics/total retention and Application Insights defaults can differ. Read actual workspace and table settings, plus applicable Application Insights/workspace caps, before accepting a retention policy.
+The DCE requires an Entra bearer token for audience `https://monitor.azure.com`
+even though its HTTPS endpoint is publicly reachable. GitHub tokens authorize
+Copilot inference, not Azure ingestion. Application Insights connection strings
+are not Azure OTLP credentials and are not used by this solution.
 
-Deployment readback verifies only the actual workspace cap/retention. The deployer does not set or query individual table retention or the separate Application Insights cap. Separate operator ARM reads on 2026-09-13 confirmed `AppDependencies`, `AppMetrics`, and `AppTraces` each have **90-day analytics and total retention**, despite the workspace's 30-day setting. Separate installed CLI billing inspection confirmed Application Insights `Basic`, a **100 GB** cap, and a **90%** warning threshold. The workspace's **1 GB** cap is lower and effective for ingestion; neither cap guarantees a cost ceiling. These observed settings are recorded privately in `.local/azure-retention.json`, not established by deployment success alone.
+Acquire short-lived tokens using an approved Azure CLI session and pass them
+in memory through the OTLP header. Do not echo them, enable shell tracing,
+save them in environment files, put them in prompts, or publish process
+environments. Privileged host users and processes with inspection access can
+read environments; file permissions and redaction do not defeat host admins.
 
-Caps can overshoot and are not hard budgets; they can also interrupt observation. Azure ingestion/storage and Copilot inference can incur charges. Review cost alerts and actual usage separately. Do not claim a spending guarantee from the configured daily quota.
+**Static environment tokens do not renew.** A wrapper can acquire a token from
+an existing authorized Azure CLI login without prompting on every run; it does
+not remove authentication, refresh an already-running CLI, or establish an
+enterprise session-lifetime mechanism. Long-running use needs separately
+designed identity, refresh, revocation, and expiry handling.
 
-The local file exporter rotates at 10 MiB with two backups and a one-day age setting. Rotation/age cleanup is not a secure erasure guarantee or a complete retention policy; asynchronous cleanup can temporarily exceed nominal size. Lifecycle commands fail readiness at 8 MiB or detected rotation so a single-file verifier does not silently claim completeness.
+## Private artifacts and publication
 
-No resources are automatically cleaned up after success. Collector stop retains evidence. The Azure teardown command is audit-only and refuses deletion of every existing group, including with `--confirm`; its parent ownership checks do not discover hidden provider/proxy resources or other users' private artifacts. Ancillary child APIs are not queried. Only verified already-absent scope yields a successful no-op. An administrator must inspect the exact scope and approve any manual cleanup separately; a passing deployment/reuse audit is not deletion authorization.
+Keep `.local/native-deployment.json`, `.local/native-azure.json`,
+`.local/native-workspace-children.json`, `.local/native-teardown.json`, run
+manifests, CLI diagnostics, raw backend responses, workbook definitions/readbacks,
+and browser evidence ignored and private. Resource identifiers and ownership markers
+are sensitive operational metadata even when they are not credentials.
+Private directories use mode `0700` and files `0600`; do not loosen permissions
+or use symlinks to bypass receipt checks.
 
-The teardown audit preserves cloud resources and all local files, including the connection string. Privately archive only what is required, then remove selected owned artifacts using an approved disposal process. A deleted resource or file is not proof that backups or all retained service data have been erased.
+The workspace-child baseline records exact saved-search identities and content
+hashes for ownership-checked cleanup. It is not a license to delete arbitrary
+default-looking resources. Do not reset, edit, or remove it to adopt an existing
+workspace or suppress a drift refusal.
 
-## What this evidence cannot prove
+Only manually reviewed sanitized summaries belong in
+[v1 evidence](evidence/v1.md). Do not publish raw telemetry or credential-bearing
+diagnostics to explain a failure. The repository remains private; a LinkedIn
+draft neither changes visibility nor gives readers repository access.
 
-The collector file copy enables comparison of real source attributes, span relationships, events, and metric snapshots with Azure conversion. It is neither immutable nor complete proof of every command, file access, tool action, or model decision. Export failures, termination, unsupported features, missing events, truncation, and histogram/quantile conversion limit fidelity. In particular, large system instructions/tool definitions may be truncated; full-content mode does not promise lossless storage of the entire model context. Required synthetic-marker proof is separate and must not be waived because other large fields have documented conversion loss. Do not advertise this repository as a lossless or tamperproof cybersecurity audit.
+## Retention, cost, and cleanup
 
-See [Azure retention](https://learn.microsoft.com/en-us/azure/azure-monitor/logs/data-retention-configure), [daily cap limitations](https://learn.microsoft.com/en-us/azure/azure-monitor/logs/daily-cap), and the [pinned exporter documentation](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/v0.160.0/exporter/azuremonitorexporter).
+Log Analytics is configured for **30-day retention and a 1 GB/day workspace
+cap**. Verify actual `OTelSpans`, `OTelEvents`, and `OTelResources` analytics/total
+retention after deployment rather than inferring table behavior solely from
+the workspace setting. Retention settings are not a secure-erasure guarantee.
+
+The daily cap can interrupt observations and is **not a hard cost ceiling**.
+Azure Monitor workspace metric ingestion, retention, and billing are separate.
+Unique run/conversation labels increase metric cardinality; bound this to the
+evaluation and design a label policy before wider use. Copilot inference and
+other Azure operations can incur additional charges. Use approved budgets and
+alerts, not the LAW cap alone.
+
+Nothing is automatically deleted after verification. Follow
+[cleanup](deployment.md#cleanup-and-rebuild) and retain only the evidence your
+policy requires. Resource deletion does not establish immediate removal from
+every retained service copy or backup.
+
+## Audit limitations
+
+Telemetry is client-generated and can be disabled, forged, dropped, buffered,
+sampled, or incomplete. Entra authenticates an authorized sender, not every
+reported action. Required signal checks do not prove complete capture of all
+commands, files, tools, optional features, or model decisions. This solution is
+operational observability, **not tamper-proof or complete cybersecurity auditing**.
+Native OTLP is preview, has no SLA, and is not recommended for production.
+
+References: [Log Analytics retention](https://learn.microsoft.com/en-us/azure/azure-monitor/logs/data-retention-configure),
+[daily cap limitations](https://learn.microsoft.com/en-us/azure/azure-monitor/logs/daily-cap),
+[Azure Monitor workspace overview](https://learn.microsoft.com/en-us/azure/azure-monitor/metrics/azure-monitor-workspace-overview).

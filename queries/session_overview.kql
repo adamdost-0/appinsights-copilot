@@ -6,7 +6,8 @@ Spans
     InputTokens = sum(InputTokens), OutputTokens = sum(OutputTokens),
     Failures = countif(Failed),
     ChatSpansMissingTokens = countif(Operation == "chat" and (isnull(InputTokens) or isnull(OutputTokens))),
-    SpansMissingConversation = countif(isempty(ConversationId))
+    SpansMissingConversation = countif(isempty(ConversationId)),
+    SpansMissingDuration = countif(isnull(DurationMs))
 | extend Conversations = conversation_count
 | project ObservedSpans, Conversations, LLMCalls, ToolCalls, InputTokens, OutputTokens,
-    Failures, ChatSpansMissingTokens, SpansMissingConversation
+    Failures, ChatSpansMissingTokens, SpansMissingConversation, SpansMissingDuration

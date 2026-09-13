@@ -9,20 +9,35 @@ import subprocess
 import tempfile
 import time
 from uuid import UUID
+from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parent.parent
 LOCAL = ROOT / ".local"
-AZURE_STATE = LOCAL / "azure.json"
+AZURE_STATE = LOCAL / "native-azure.json"
 
 
 class AppError(RuntimeError):
     """An actionable operational failure safe to display after redaction."""
 
 
+def cli_version(value: str) -> str:
+    if not isinstance(value, str):
+        raise AppError("CLI manifest and service.version must contain a supported CLI version")
+    match = re.fullmatch(
+        r"(?:GitHub Copilot CLI\s+)?v?(\d+\.\d+\.\d+"
+        r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+        r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)\.?", value.strip())
+    if match is None:
+        raise AppError("CLI manifest or service.version has an unrecognized version format")
+    return match.group(1)
+
+
 def redact(text: str, env: dict[str, str] | None = None) -> str:
     for name, value in (os.environ if env is None else env).items():
-        if value and re.search(r"SECRET|TOKEN|PASSWORD|CONNECTION_STRING|API_KEY", name, re.I):
+        if value and re.search(r"SECRET|TOKEN|PASSWORD|CONNECTION_STRING|API_KEY|HEADERS", name, re.I):
+            text = text.replace(quote(value, safe=""), "[REDACTED]")
             text = text.replace(value, "[REDACTED]")
+    text = re.sub(r"Bearer%20[^\s,\"']+", "[REDACTED]", text, flags=re.I)
     text = re.sub(r"InstrumentationKey=[^\s\"']+", "[REDACTED_CONNECTION_STRING]", text, flags=re.I)
     return re.sub(r"Bearer\s+\S+", "Bearer [REDACTED]", text, flags=re.I)
 
