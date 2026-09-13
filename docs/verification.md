@@ -1,5 +1,9 @@
 # Verify actual CLI telemetry, not just health
 
+**Historical verifier:** the source/collector comparison below applies only to
+the classic exporter experiment. The current target uses [native OTLP
+verification](native-otlp.md) and has [separate native evidence](evidence/native-example.md).
+
 **No cloud result is assumed.** A ready collector, zero CLI exit code, standalone synthetic OTLP generator, or unit-test fixture is insufficient proof. End-to-end verification requires real CLI source telemetry and matching Azure records from the same run. Current observations are in [the evidence record](evidence/local-example.md).
 
 ## Offline and configuration checks

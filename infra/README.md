@@ -1,5 +1,9 @@
 # Dedicated Copilot OTEL monitoring resources
 
+**Native OTLP entry point:** use [`native-main.bicep`](native-main.bicep) and
+[the collector-free deployment guide](../docs/native-otlp.md). The instructions
+below document the historical `main.bicep` collector/exporter experiment.
+
 Local Copilot sends OTEL to the local collector. The collector exports to
 workspace-based Application Insights, linked explicitly to this solution's Log
 Analytics workspace. No collector or cloud-hosted compute is provisioned here.

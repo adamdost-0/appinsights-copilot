@@ -1,5 +1,10 @@
 # Troubleshooting
 
+**Historical collector troubleshooting:** use the [native guide](native-otlp.md)
+for the current collector-free route. Native signals use different endpoints,
+authentication, tables, and histogram queries; do not introduce a collector to
+follow the diagnostic sequence below.
+
 Diagnose in this order: **exporter configuration -> real CLI source -> collector -> Azure authentication/policy -> query**. Preserve nonzero exits and bounded timeouts; do not rerun inference or deployment blindly. Keep diagnostics private and never dump a token, environment, full `docker inspect`, connection string, or raw telemetry into an issue.
 
 | Stage | Symptom and safe next check |

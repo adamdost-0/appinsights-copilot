@@ -1,5 +1,9 @@
 # Deployment and collector lifecycle
 
+**Historical path:** this page covers the local-collector experiment.
+For the current collector-free target, use [native deployment and environment
+configuration](native-otlp.md); Docker is not required for that path.
+
 ## Prerequisites and boundaries
 
 The supported cloud is public `AzureCloud`. Install Python **3.12+** (tested on 3.12.3), Azure CLI/Bicep, Docker client plus a **local** running daemon capable of host bind mounts, and Copilot CLI. Version observations, not blanket compatibility guarantees, are in [the evidence record](evidence/local-example.md).

@@ -1,5 +1,11 @@
 # Security and data handling
 
+The synthetic-only consent below applies to both experiments. Collector
+transforms and connection-string controls describe the **historical** path;
+the [native route](native-otlp.md) instead uses Entra headers and no collector.
+Its [measured content-off result](evidence/native-example.md#content-and-privacy)
+distinguishes retained tool name/type metadata from a prompt or argument leak.
+
 ## Approved capture scope
 
 Full-content capture is approved **only for fabricated inputs in isolated synthetic sessions**. The harness creates a temporary `HOME`, `COPILOT_HOME`, and workdir, uses a synthetic fixture/marker, suppresses normal custom instructions and built-in MCPs, and restricts tools. It must not load normal projects, personal configuration, private repositories, plugins, skills, or custom MCPs. Do not broaden this consent to another user's data or production sessions.

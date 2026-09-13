@@ -1,6 +1,40 @@
-# Copilot CLI telemetry through a pinned local collector
+# Copilot CLI native OTLP to Azure Application Insights
 
-Repeatable, synthetic-only verification of this path:
+The target deployment is **collector-free**: Copilot CLI uses environment
+variables to send directly to Azure Monitor's native OTLP endpoints associated
+with Application Insights.
+
+```text
+Copilot CLI -- HTTPS OTLP/protobuf + Entra token --> native Azure Monitor endpoints
+            separate traces and metrics URLs       |-- Log Analytics (traces)
+                                                   `-- Azure Monitor workspace (metrics)
+```
+
+Start with the [native environment-variable contract](docs/native-otlp.md).
+The installed CLI honors separate signal URLs and authentication headers.
+The dedicated native Azure stack has been deployed and repeat apply preserves
+its identities and URLs. **Automated Azure checks prove ingestion for all three
+synthetic scenarios: 15 native spans, 13 events, and 26 required histogram
+series.** Azure accepted the CLI's cumulative explicit histograms even though
+its requested DELTA/exponential-histogram settings were not honored.
+See [the native evidence record](docs/evidence/native-example.md); the earlier
+77-row result below belongs only to the historical path.
+
+**Native privacy caveat:** capture-off still emitted tool **name/type metadata**
+in `gen_ai.tool.definitions`. That fails the experiment's strict key-absence
+control, but is not evidence of prompt or argument leakage. Keep this experiment
+synthetic-only; successful ingestion is not a complete-audit guarantee.
+
+Deploy with `python3 -m scripts.native_deploy --subscription "$AZURE_SUBSCRIPTION_ID" --apply`.
+Run `python3 -m scripts.native_smoke --scenario full-content`, then verify its
+printed UUID with `python3 -m scripts.verify_native --run-id "$RUN_ID"`.
+The [native guide](docs/native-otlp.md) covers prerequisites, what-if, all three
+scenarios, exact environment variables, token lifetime, and the expected
+metadata-policy failure.
+
+## Historical collector-based compatibility proof
+
+The initial experiment verified this different, synthetic-only path:
 
 ```text
 Copilot CLI -- OTLP HTTP/protobuf --> 127.0.0.1:4318
@@ -10,13 +44,13 @@ Copilot CLI -- OTLP HTTP/protobuf --> 127.0.0.1:4318
                                  linked Log Analytics workspace
 ```
 
-**End-to-end Azure telemetry verification passed for all three synthetic scenarios on 2026-09-13.** Real Log Analytics queries matched post-transform collector evidence from fresh, unchanged Azure-mode manifests: 77 backend rows across dependencies, traces, and metrics. Deployment and repeat apply also succeeded. Native CLI content-off privacy remains defective, and optional content truncation means transport is not lossless. See [the evidence record](docs/evidence/local-example.md) for counts and exact proof boundaries.
+**End-to-end Azure telemetry verification passed for all three synthetic scenarios on 2026-09-13.** Real Log Analytics queries matched post-transform collector evidence from fresh, unchanged Azure-mode manifests: 77 backend rows across dependencies, traces, and metrics. Deployment and repeat apply also succeeded. The native CLI did not meet the experiment's strict content-key-absence control, and optional content truncation means this exporter route is not lossless. See [the evidence record](docs/evidence/local-example.md) for counts and exact proof boundaries.
 
 The CLI exports OTLP, not classic Application Insights connection-string telemetry. Only the collector receives the connection string. Its beta `azure_monitor` exporter explicitly enables span events. Azure conversion is not lossless; the private file copy allows source/backend comparison. This is an observability experiment, not a complete, tamperproof cybersecurity audit.
 
 **Observed privacy divergence:** CLI 1.0.84-5 emitted nonempty tool definitions despite content capture being disabled in the raw metadata-only diagnostic. The required collector-side privacy filter is a downstream mitigation, not proof of native CLI compliance. See [the privacy boundary and current mitigation status](docs/security-and-data.md#observed-content-off-divergence-and-collector-boundary) before exporting.
 
-## Start here
+## Reproduce the historical collector experiment
 
 Use Linux, Python **3.12+** (tested on 3.12.3), Azure CLI with Bicep, a local Docker daemon, and an authenticated Copilot CLI account. Read [security and data handling](docs/security-and-data.md) before capture. Full-content consent covers **only synthetic sessions in temporary isolated homes and working directories**, never normal projects or existing CLI configuration.
 
