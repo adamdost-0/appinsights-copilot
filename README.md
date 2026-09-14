@@ -1,121 +1,100 @@
-# Monitor GitHub Copilot CLI with Azure Monitor: v1 administrator guide
+# Monitor GitHub Copilot CLI with Azure Monitor
 
-Send GitHub Copilot CLI telemetry directly to Azure Monitor using **HTTPS
-binary OTLP/HTTP protobuf and Microsoft Entra authentication**. Use Log
-Analytics for sessions, traces, and events, and an Azure Monitor workspace for
-native histogram metrics.
+Send binary OTLP/HTTP protobuf to an **IP-restricted Azure Function relay**,
+without an Azure bearer token or Function key on the client. The relay uses
+managed identity to authenticate to the existing Azure Monitor DCE/DCR.
+Log Analytics stores native traces/events/logs; an Azure Monitor workspace
+stores native metrics. Optional direct authenticated DCE export remains supported.
 
-**v1 versions this example, not the Azure service.** Azure Monitor native OTLP
-ingestion remains **preview, without an SLA, and not recommended for production
-workloads**. This is an administrator evaluation guide, not an enterprise
-production-readiness or complete cybersecurity-audit claim. Fresh v1
-[native ingestion verification passed](docs/evidence/v1.md) for all three
-synthetic scenarios: **15 spans, 13 events, and 26 required metric series**.
-The workbook's saved definition, LAW association, seven live queries, and
-selected drilldowns also passed; authenticated portal rendering is not verified.
-No earlier deployment results are presented as proof of this rebuild.
+**Azure native OTLP ingestion is preview, without an SLA, and not recommended
+for production.** The relay does not change that status or provide tamper-proof
+auditing, per-user authorization, privacy filtering, or guaranteed delivery.
+Any caller sharing an allowed public egress IP can submit data.
 
 ```text
-GitHub Copilot CLI
-  | HTTPS binary OTLP/HTTP protobuf + Entra bearer header
+Copilot CLI (binary OTLP/HTTP; no Azure token or Function key)
+  | HTTPS from approved IPv4 CIDRs only; unmatched app/SCM traffic denied
   v
-Manually provisioned Data Collection Endpoint (DCE)
-  |
-Data Collection Rule (DCR)
-  |-- traces + span events --> Log Analytics
-  |                           OTelSpans / OTelEvents / OTelResources
-  `-- metrics -------------> Azure Monitor workspace
-                              native histograms queried with PromQL
+Node 22 Azure Function /v1/traces, /v1/logs, /v1/metrics
+  | system-assigned managed identity + Entra Monitor token
+  v
+Existing explicit DCE -> DCR
+  |-- traces/events/resources/logs --> Log Analytics
+  `-- native histogram metrics ----> Azure Monitor workspace
 
-Log Analytics --> seven-panel Azure Monitor workbook
+Optional: approved client + Entra bearer token -> same DCE/DCR directly
+Log Analytics -> seven-panel session workbook (span-based, not metric proof)
 ```
 
-There is **no Application Insights component**, portal OTLP opt-in step,
-collector, VM, container, or Azure Monitor Agent. Microsoft's
-[manual orchestration option](https://learn.microsoft.com/en-us/azure/azure-monitor/containers/opentelemetry-protocol-ingestion#option-2-manual-resource-orchestration)
-explicitly makes Application Insights optional; its
-[overview](https://learn.microsoft.com/en-us/azure/azure-monitor/containers/collect-use-observability-data)
-also supports endpoint URLs in SDK configuration. This example configures the
-CLI's exporter directly.
+There is no Application Insights component, collector, VM, container, Azure
+Monitor Agent, or portal OTLP opt-in. The relay is a billable Flex Consumption
+Function plus identity-protected storage, separate from the native resources.
+Microsoft's [manual orchestration](https://learn.microsoft.com/en-us/azure/azure-monitor/containers/opentelemetry-protocol-ingestion#option-2-manual-resource-orchestration)
+makes Application Insights optional.
 
 ## Start here
 
-Use Linux, **Python 3.12+** with the standard library, Azure CLI with Bicep,
-Copilot CLI, and GitHub CLI authentication. Linux is the tested platform;
-PowerShell and Windows are not validated. You need an authorized Azure public
-cloud subscription and permission to deploy resources and assign scoped roles.
-Read the [privacy boundaries](docs/security-and-data.md) before inference.
+Use Linux, Azure CLI/Bicep, Bash, jq, Node **22**/npm, zip/unzip and curl.
+**Deployment is documented Azure CLI commands, not Python scripts or
+`func publish`.** Python 3.12+ remains optional for existing synthetic
+smoke/query tests. Copilot/GitHub sign-in is separate from Azure deployment
+authentication.
 
-From the repository root, after Azure and GitHub sign-in:
+1. Read [security and privacy](docs/security-and-data.md), then deploy or reuse
+   the native stack through [Azure CLI deployment](docs/deployment.md).
+2. Deploy the [restricted relay](docs/relay-deployment.md), supplying a
+   **nonempty approved IPv4 CIDR allowlist** before creating the app. Package
+   only production code/dependencies and deploy with Azure CLI `config-zip`.
+3. Require [fresh no-client-auth logs forwarding and LAW persistence](AGENTS.md#telemetry-evidence),
+   plus off-allowlist denial. CLI spans/events have separate relay proof;
+   **complete CLI signal acceptance is still blocked on native AMW metrics**.
+   Privacy and authenticated workbook rendering are independent gates.
+4. After separate organizational approval, configure the local host using
+   [Administrators.md](Administrators.md). Agent context and remaining work for
+   the [workbook](AGENTS.md#workbook-context-and-agent-tasks) live in `AGENTS.md`.
 
-```bash
-export AZURE_SUBSCRIPTION_ID="<your-authorized-subscription-uuid>"
-python3 -m scripts.preflight
-python3 -m scripts.native_deploy \
-  --subscription "$AZURE_SUBSCRIPTION_ID" --location eastus --what-if
-python3 -m scripts.native_deploy \
-  --subscription "$AZURE_SUBSCRIPTION_ID" --location eastus --apply
-python3 -m scripts.native_smoke --scenario metadata-only
-```
+The native group stays **`rg-copilot-otel-v1`**, tagged `copilot-otel-v1`.
+The relay is isolated in **`rg-copilot-otel-relay`**, tagged
+`copilot-otel-relay`, with its **own fresh ownership marker**. Its publisher
+role assignment is scoped to the existing DCR and needs explicit removal/review
+before native teardown. Do not weaken existing ownership guards.
 
-The smoke command prints a fresh run UUID. Verify that exact completed run:
+Keep original native receipts/baselines and all new relay artifacts under
+ignored, private `.local/`. Never overwrite native state with relay endpoints.
+LAW's requested 30-day retention and 1 GB/day cap are **not a solution spending
+ceiling**; metrics, relay compute/storage and inference have separate costs.
 
-```bash
-export RUN_ID="<uuid-printed-by-the-smoke-command>"
-python3 -m scripts.verify_native --run-id "$RUN_ID" --timeout-seconds 600
-```
+## Evidence and guide
 
-Workbook validation requires observed tool activity; metadata-only alone does
-not populate its Tools panel. **Only after approval for isolated synthetic
-content capture**, run and verify the full-content fixture:
+[Live Function relay evidence](docs/evidence/function-relay.md) is the
+authoritative record of the demonstrated no-client-auth logs-to-LAW path and
+default-deny enforcement. Corrected CLI acceptance uses temporary execution
+directories outside the repository to prevent ancestor Git metadata capture;
+use the final evidence there, not the initial checkout-local run's UUID/counts.
+**Relay native metrics ingestion is not verified**; do not
+treat the configured metrics route as measured proof.
+Opt-in Linux [hostname and user attribution](Administrators.md#opt-in-user-attribution)
+were verified on isolated CLI spans and correlated events, not on metric
+series. These are client-supplied labels, not authenticated employee identity;
+Windows, AD and GPO rollout remain untested.
 
-```bash
-python3 -m scripts.native_smoke --scenario full-content
-```
+[Historical v1 evidence](docs/evidence/v1.md) records the prior **direct,
+authenticated** synthetic execution: 15 spans, 13 events and 26 required
+metric series, plus saved workbook/live-query checks. It is **not relay logs
+proof**. Authenticated portal rendering remains unverified. The relay results
+are recorded separately, not inferred from Bicep compilation, HTTP success,
+or the historical record.
 
-Use this command's new UUID, not the metadata-only UUID:
-
-```bash
-export RUN_ID="<uuid-printed-by-the-full-content-command>"
-python3 -m scripts.verify_native --run-id "$RUN_ID" --timeout-seconds 600
-python3 -m scripts.visualizations --what-if
-python3 -m scripts.visualizations --apply
-```
-
-If synthetic content capture is not approved, stop before workbook deployment;
-do not remove the nonempty Tools validation gate.
-
-These commands create billable resources and run real inference. Review what-if
-before apply. A successful deployment or CLI exit does not prove ingestion;
-verification must query both destination workspaces. A saved workbook and
-successful panel queries do not prove authenticated portal rendering.
-
-After the synthetic evaluation and a separate organizational privacy/access
-approval, use [normal CLI session onboarding](docs/usage.md) to enable
-metadata-only monitoring for ordinary use. That recipe is documented, not
-executed as part of this example's proof; all verification uses synthetic data.
-
-## One guide, organized by administrator task
-
-| Chapter | Use it for |
+| Guide | Purpose |
 | --- | --- |
-| [Deploy and rebuild](docs/deployment.md) | Azure CLI prerequisites, roles, ownership, apply, and cleanup |
-| [Infrastructure contract](infra/README.md) | Bicep resources, endpoints, receipts, and settings |
-| [Onboard normal CLI sessions](docs/usage.md) | Separately approved metadata-only use, ephemeral bearer headers, and session expiry |
-| [Verify telemetry](docs/verification.md) | Exact exporter environment, three synthetic scenarios, KQL and PromQL proof |
-| [Read the workbook](docs/visualizations.md) | Seven Log Analytics panels, safe selectors, and UI acceptance |
-| [Security and data](docs/security-and-data.md) | Metadata-only policy, credentials, privacy, retention, and cost |
-| [Troubleshoot](docs/troubleshooting.md) | Authentication, protocol, schema, ingestion, and ownership failures |
-| [v1 evidence status](docs/evidence/v1.md) | Fresh-execution status and publication boundaries |
-| [LinkedIn draft](docs/linkedin.md) | Shareable v1 introduction; not posted |
+| [Infrastructure contract](infra/README.md) | Existing native contract and new relay modules |
+| [Relay runtime](src/README.md) | Handler configuration, transport limits and local tests |
+| [Deployment](docs/deployment.md) / [relay](docs/relay-deployment.md) | Native and Function Azure CLI runbooks |
+| [Administrators](Administrators.md) | Local-host environment variables, host/user attribution and optional direct authentication |
+| [Agent context](AGENTS.md) | Architecture, evidence boundaries, workbook intent and remaining agent tasks |
+| [Troubleshooting](docs/troubleshooting.md) | Ingress, MI, deployment, routing and backend failures |
+| [Security](docs/security-and-data.md) | Data, access, retention and cost boundaries |
 
-The resource group is `rg-copilot-otel-v1`, with solution tag
-`copilot-otel-v1` and unique per-group resource suffixes. Keep ownership receipts
-and all runtime evidence under ignored, private `.local/`; never publish them.
-Retention is configured to 30 days in Log Analytics with a 1 GB/day workspace
-cap, **not a spending ceiling**. Azure Monitor workspace metrics have separate
-billing, retention, and cardinality considerations.
-
-The repository remains **private**. This guide and the LinkedIn draft do not
-grant repository access or authorize publishing, committing, pushing, or
-changing visibility.
+The repository remains **private**. Documentation does not authorize commits,
+pushes, publishing evidence, changing visibility, or exporting normal-user
+content. All test evidence must use isolated synthetic data.

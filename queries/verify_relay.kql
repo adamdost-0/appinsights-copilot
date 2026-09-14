@@ -1,0 +1,35 @@
+let run_id = "__RUN_ID__";
+let Resources =
+    OTelResources
+    | where TimeGenerated > ago(1d)
+    | summarize arg_max(TimeGenerated, Attributes) by Id
+    | project ResourceAttributesId = Id, JoinedAttributes = Attributes;
+let Spans = materialize(
+    OTelSpans
+    | where TimeGenerated > ago(1d)
+    | where _ResourceId == ""
+    | join kind=leftouter Resources on ResourceAttributesId
+    | extend EffectiveResourceAttributes = bag_merge(
+        coalesce(ResourceAttributes, dynamic({})),
+        coalesce(JoinedAttributes, dynamic({})))
+    | where tostring(EffectiveResourceAttributes["copilot.run.id"]) == run_id
+    | where tostring(EffectiveResourceAttributes["service.name"]) == "github-copilot");
+union
+    (OTelLogs
+    | where TimeGenerated > ago(1d)
+    | where _ResourceId == ""
+    | where tostring(Attributes["run.id"]) == run_id
+    | where Body == strcat("SYNTHETIC_RELAY_", run_id)
+    | where ServiceName == "github-copilot"
+    | project Signal = "logs", TimeGenerated, Name = Body, TraceId, SpanId,
+        Attributes, ResourceAttributes),
+    (Spans
+    | project Signal = "spans", TimeGenerated, Name, TraceId, SpanId,
+        Attributes, ResourceAttributes = EffectiveResourceAttributes),
+    (OTelEvents
+    | where TimeGenerated > ago(1d)
+    | where _ResourceId == ""
+    | join kind=inner (Spans | project TraceId, SpanId, EffectiveResourceAttributes) on TraceId, SpanId
+    | project Signal = "events", TimeGenerated, Name, TraceId, SpanId,
+        Attributes, ResourceAttributes = EffectiveResourceAttributes)
+| order by TimeGenerated asc

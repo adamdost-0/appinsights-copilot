@@ -1,0 +1,33 @@
+{
+  "version": "2.0",
+  "functionTimeout": "00:01:00",
+  "extensionBundle": {
+    "id": "Microsoft.Azure.Functions.ExtensionBundle",
+    "version": "[4.0.0, 5.0.0)"
+  },
+  "extensions": {
+    "http": {
+      "routePrefix": "",
+      "maxConcurrentRequests": 16,
+      "maxOutstandingRequests": 32,
+      "dynamicThrottlesEnabled": true
+    }
+  },
+  "logging": {
+    "logLevel": {
+      "default": "None",
+      "Host.Results": "None",
+      "Host.Aggregator": "None",
+      "Function.otlp.User": "Error"
+    },
+    "applicationInsights": {
+      "enableDependencyTracking": false,
+      "enableLiveMetrics": false,
+      "httpAutoCollectionOptions": {
+        "enableHttpTriggerExtendedInfoCollection": false,
+        "enableW3CDistributedTracing": false,
+        "enableResponseHeaderInjection": false
+      }
+    }
+  }
+}
