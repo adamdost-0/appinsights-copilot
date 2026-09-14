@@ -1,4 +1,4 @@
-# Troubleshooting relay and optional direct OTLP
+# Troubleshooting Function, APIM, and direct OTLP
 
 [Administrator guide](../Administrators.md) | [Evidence requirements](../AGENTS.md#telemetry-evidence)
 
@@ -9,6 +9,13 @@ inference or recreate resources blindly.
 
 | Symptom | Check and action |
 | --- | --- |
+| APIM 401 or 403 before forwarding | Use the dedicated API subscription, custom `X-Copilot-Telemetry-Key` header, active state and correct gateway. Built-in all-access, all-API and product keys are intentionally not admitted. Do not disable subscription enforcement or replace the endpoint with the anonymous Function to hide a failure. |
+| APIM request contract rejection | Only POST `/otlp/v1/{traces,logs,metrics}`, fixed-length binary protobuf, no query strings and no compression are supported. Missing length is 411; chunked framing is unsupported. Empty/oversized input is rejected. Inspect status against the checked-in policy; do not interpret any 4xx as proof authentication ran. Function streaming/gzip behavior is separate. |
+| APIM 429 or quota rejection | Check API-level per-subscription rate/quota policy, retry guidance, and the operator-approved allowance. A quota is not a spending ceiling; do not run unbounded load probes or raise limits automatically. |
+| APIM policy/MI/backend failure | Verify exact serialized API/operation policies, fixed native endpoint provenance, system identity, Monitor audience and its DCR-only publisher assignment. APIM must not forward the client key or bearer upstream. Keep raw request/response bodies, tokens and keys out of tracing. |
+| APIM old key still works during rotation | Retain the secondary key, verify the exact subscription ID, regenerate only the intended key, and allow bounded gateway propagation. Measure both old-key denial and replacement-key success. A control-plane 204 is not data-plane revocation proof. |
+| APIM E2E HTTP pass but no data | Query the receipt-owned LAW using each fresh probe UUID and native AMW separately. `awaiting_backend_verification` is not an ingestion pass. APIM readback and historical direct/Function evidence cannot close the gate. |
+| APIM creation or region/SKU rejected | Preserve private Azure error and original intent; check quota, provider registration, Azure policy and supported Developer evaluation settings. Do not adopt an existing APIM service, select another subscription/tier, or widen permissions to bypass the rejection. |
 | Relay HTTP 403 before the handler | Check actual public IPv4 egress against approved app rules and Deny unmatched. NAT/VPN changes affect admission. Do not add Function keys or bearer tokens or open `/0`; approve an exact CIDR change if needed. |
 | Azure CLI code deployment denied | The deployment host must be allowed by SCM rules and have deployment rights. Use current Azure CLI `config-zip` (Flex OneDeploy) with `--build-remote false`; do not switch to legacy `/api/zipdeploy`, Python deploy scripts, `func publish`, basic auth, or allow-all. |
 | OneDeploy returns 202, then CLI exits with host-key status-check failure | Upload acceptance is not readiness or confirmed failure of the upload. Preserve the deployment identifier and nonzero CLI result; inspect that deployment's actual status, site/config and route behavior. Do not blindly redeploy or weaken auth/ingress. Successful code deployment requires a real no-client-auth request and matching persisted backend data. |
@@ -54,3 +61,8 @@ For safe retirement and a new deployment, follow the
 with separately approved Azure CLI commands; explicitly remove/review the relay's
 external DCR role before native teardown. Never use a
 generic broad delete to bypass an ownership refusal.
+
+The [APIM runbook](apim-deployment.md) owns its Azure CLI commands and separate
+acceptance gates. Do not overwrite the Function or historical v1 evidence with
+APIM results. Neither APIM's forward timeout nor its response buffering is the
+Function's end-to-end 30-second deadline contract.

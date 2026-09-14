@@ -9,6 +9,14 @@ There is no Application Insights component or workstation collector.
 The Function moves Azure authentication off clients; it does not make the
 DCE anonymous. GitHub authentication for inference remains separate.
 
+The alternative APIM gateway uses a dedicated API-scoped client key and APIM
+managed identity on the same native DCR. Follow `docs/apim-deployment.md`;
+do not route APIM through or modify the existing Function. APIM owns
+`rg-copilot-otel-apim`, a fresh marker and private `.local/apim*` artifacts.
+Only its additive DCR publisher assignment crosses groups. Shared native
+destinations mean independent gateway lifecycle, not isolated backend quota.
+Do not describe an APIM key as an Entra audience/scope token or employee identity.
+
 [Administrators.md](Administrators.md) is the canonical local-host environment
 guide, including optional host/user labels and user-context/GPO caveats.
 Do not duplicate exporter configuration in separate onboarding documents.
@@ -41,6 +49,14 @@ Do not duplicate exporter configuration in separate onboarding documents.
   Host/user labels are explicit client assertions, not authenticated identity.
   Normalize deployment archive permissions only on staged runtime entries;
   keep private receipts, ZIPs and telemetry private.
+- APIM built-in all-access keys must not bypass API-level subscription-ID
+  admission. Require fixed endpoint provenance, credential stripping, actual
+  body bounds, fail-closed provisioning, and no query-string credentials.
+  Do not relax policies to pass a smoke test. APIM v1 rejects gzip rather than
+  claiming the Function's decompression bound.
+- APIM proof must use its own fresh HTTP probes and backend queries. Preserve
+  Function/v1 evidence independently. Readbacks are not gateway-runtime proof;
+  authenticated ingestion and key revocation need measured data-plane results.
 
 ## Telemetry evidence
 
@@ -153,3 +169,6 @@ native DCR outside that group and needs explicit removal/review when retiring
 the relay. Do not remove other publishers, silently reset baselines or force
 deletion of AMW-managed resources. Retirement needs separately reviewed Azure
 CLI commands and explicit approval; this file is not a teardown runbook.
+APIM has the same external-role lifecycle constraint: remove/review only its
+receipt-owned DCR assignment, never another publisher. No APIM update or
+documentation change authorizes deleting either existing resource group.

@@ -12,6 +12,11 @@ Azure native OTLP remains preview, without an SLA, and not recommended for
 production. Approval to evaluate it does not make this example enterprise
 production-ready.
 
+Choose the existing IP-restricted Function, the
+[API-key-authenticated APIM alternative](docs/apim-deployment.md), or optional
+direct DCE authentication. Do not mix their endpoints and credentials.
+This file remains the canonical exporter configuration guide for all paths.
+
 ## Administrator approval and onboarding
 
 Before enabling a normal session, obtain the organization's approval for the
@@ -139,6 +144,70 @@ The relay has a `/v1/logs` route for OTLP log producers and synthetic forwarding
 tests. This **does not establish a standalone Copilot CLI logs exporter**;
 CLI span events still travel with traces. Do not invent unsupported CLI logs
 configuration or mistake a synthetic log generator for real CLI proof.
+
+## APIM alternative: API-scoped client credential
+
+Deploy and accept the [APIM path](docs/apim-deployment.md) separately.
+APIM authenticates possession of a key for the dedicated telemetry API;
+`host.name` and `user.id` remain client assertions. Clients receive no Azure
+publisher role, no APIM management access, and no Monitor bearer token.
+Only APIM's identity has the DCR publisher assignment. API keys have no
+built-in expiry or automatic renewal; the primary/secondary pair supports
+rotation, not two separate user identities.
+
+Distribute the key through an approved enterprise secret-delivery mechanism.
+Do not put keys in GPO plaintext, profiles, `.env` files, prompts, URLs, argv,
+or endpoint-management logs. Distribute only nonsecret URLs/settings by GPO.
+Windows/AD/GPO credential delivery is not validated here. One credential shared
+by an entire organization has a large compromise/revocation impact; use a
+separately approved enrollment design before broad rollout.
+
+The following Linux subshell reads the key without echo or command history.
+An approved secret manager can instead supply it in memory. Use the exact
+nonsecret gateway base URL from the APIM receipt. Run only after live acceptance
+and separate organizational approval, not as release testing on ordinary work.
+
+```bash
+(
+  set +x
+  set -euo pipefail
+  APIM_BASE="https://<approved-apim-host>/otlp"
+  read -r -s -p 'Telemetry API key: ' APIM_SUBSCRIPTION_KEY
+  printf '\n'
+  test -n "$APIM_SUBSCRIPTION_KEY"
+  unset OTEL_EXPORTER_OTLP_ENDPOINT COPILOT_OTEL_FILE_EXPORTER_PATH
+  unset OTEL_EXPORTER_OTLP_TRACES_HEADERS OTEL_EXPORTER_OTLP_METRICS_HEADERS
+  unset OTEL_EXPORTER_OTLP_LOGS_HEADERS OTEL_RESOURCE_ATTRIBUTES
+  export COPILOT_OTEL_ENABLED=true
+  export COPILOT_OTEL_EXPORTER_TYPE=otlp-http
+  export COPILOT_OTEL_SOURCE_NAME=github.copilot
+  export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+  export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf
+  export OTEL_EXPORTER_OTLP_METRICS_PROTOCOL=http/protobuf
+  export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="$APIM_BASE/v1/traces"
+  export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT="$APIM_BASE/v1/metrics"
+  export OTEL_EXPORTER_OTLP_HEADERS="X-Copilot-Telemetry-Key=${APIM_SUBSCRIPTION_KEY}"
+  unset APIM_SUBSCRIPTION_KEY
+  export OTEL_SERVICE_NAME=github-copilot
+  export OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false
+  copilot --secret-env-vars=OTEL_EXPORTER_OTLP_HEADERS,COPILOT_GITHUB_TOKEN,GH_TOKEN,GITHUB_TOKEN
+)
+```
+
+Reconcile organizational resource labels and other approved settings rather
+than erasing them unintentionally. APIM v1 accepts uncompressed binary protobuf
+only; do not configure gzip. The Function's existing bounded gzip support is
+unchanged. Generic or per-signal compression overrides must be reconciled before
+launch. Failed export need not stop inference; a working Copilot session is not
+evidence of ingestion.
+
+The runtime inherits a static key snapshot. To rotate, distribute the replacement
+key, restart affected CLI processes, then revoke the old key using the runbook.
+Updating a shell cannot update an already-running CLI. Key revocation is subject
+to APIM propagation and must be measured, not assumed instantaneous.
+`--secret-env-vars` reduces shell/MCP disclosure; it cannot defeat host admins,
+process inspection, malicious plugins, or a compromised client. Keep all
+organization-required secret variable names in that option.
 
 ## Opt-in hostname attribution
 

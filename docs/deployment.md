@@ -1,6 +1,7 @@
 # Deploy and rebuild with Azure CLI
 
 [Administrator guide](../Administrators.md) | [Relay deployment](relay-deployment.md) |
+[APIM deployment](apim-deployment.md) |
 [Agent and workbook context](../AGENTS.md)
 
 These are operator-executed **Bash + Azure CLI + Bicep** runbooks, not Python
@@ -14,6 +15,10 @@ creating the dedicated `rg-copilot-otel-v1`, LAW, AMW, and explicit DCE/DCR.
 No Application Insights component, portal OTLP opt-in, collector, VM, container,
 or agent is required. The new default client route adds a restricted Function
 in **another group**, then authenticates to this same DCE with managed identity.
+The [APIM alternative](apim-deployment.md) also uses managed identity but
+requires an API-scoped key from clients. Its entry point owns a different group;
+do not reapply this native template merely to add APIM. Both gateways have
+separate receipts and one explicitly reviewed publisher assignment on this DCR.
 
 ## Prerequisites and private state
 
@@ -239,10 +244,13 @@ az rest --method get --url "https://management.azure.com${LAW_ID}?api-version=20
   > "$INVENTORY_DIR/law.json"
 az rest --method get --url "https://management.azure.com${AMW_ID}?api-version=2025-10-03" \
   > "$INVENTORY_DIR/amw.json"
-az role assignment list --scope "$(jq -er .dcr_resource_id "$NATIVE_STATE")" --all \
+az role assignment list --scope "$(jq -er .dcr_resource_id "$NATIVE_STATE")" \
+  --include-inherited --fill-principal-name false \
   > "$INVENTORY_DIR/dcr-roles.json"
-az role assignment list --scope "$LAW_ID" --all > "$INVENTORY_DIR/law-roles.json"
-az role assignment list --scope "$AMW_ID" --all > "$INVENTORY_DIR/amw-roles.json"
+az role assignment list --scope "$LAW_ID" --include-inherited --fill-principal-name false \
+  > "$INVENTORY_DIR/law-roles.json"
+az role assignment list --scope "$AMW_ID" --include-inherited --fill-principal-name false \
+  > "$INVENTORY_DIR/amw-roles.json"
 
 capture_children() {
   local child="$1" api="$2" url page pages

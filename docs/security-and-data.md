@@ -74,7 +74,7 @@ perform backend privacy validation. Its manifest remains
 attributes. The [measured relay inspection](evidence/function-relay.md)
 permitted two exact name/type-only fields, not strict six-key absence.
 
-Neither the default relay nor the optional direct route is a privacy filter.
+None of the Function, APIM, or direct routes is a privacy filter.
 The relay forwards opaque binary OTLP; it does not inspect or redact content.
 Backend validation
 detects a violation **after data has been sent**; it cannot retract that data or
@@ -94,6 +94,8 @@ scanner, DLP system, or permission to add arbitrary resource attributes.
 | --- | --- |
 | Default relay client | Approved public IPv4 egress; no Azure token or Function key |
 | Relay system-assigned identity | Monitoring Metrics Publisher on the explicit DCR; Storage Blob Data Owner on relay-only host/deployment storage |
+| APIM client | Active key for the dedicated telemetry API subscription; no Azure resource roles |
+| APIM system-assigned identity | Monitoring Metrics Publisher on the exact existing DCR; no LAW/AMW read roles |
 | Optional direct sender | Monitoring Metrics Publisher on the explicit DCR |
 | Metrics auditor | Monitoring Data Reader on the Azure Monitor workspace |
 | Trace/event auditor | Log Analytics Reader on the Log Analytics workspace |
@@ -144,6 +146,61 @@ upstream authentication; that is not removal of DCE authentication or proof of
 lossless delivery. Recreated system identities require new scoped RBAC and
 explicit stale-role cleanup.
 
+### APIM alternative: shared-secret authentication
+
+The [APIM runbook](apim-deployment.md) creates a separate gateway; it does not
+change the Function's no-client-auth contract. Its
+`X-Copilot-Telemetry-Key` credential is an APIM **API-scoped subscription key**,
+not an Entra JWT. Possession authorizes only the configured telemetry API.
+There are no issuer, audience, OAuth scope, token-expiry, employee-identity,
+or device-attestation claims to validate in such a key. Entra OAuth with a
+dedicated audience and required scope/role would be a separate implementation,
+including token refresh and revocation design on long-running clients.
+
+APIM's built-in subscription check also accepts product, all-API, and service
+all-access subscriptions. This solution therefore additionally checks the
+allowed subscription identity at **API scope**, without product membership.
+The all-access test-console key must not bypass that check. Policy editors and
+subscription administrators remain trusted privileged operators; someone who
+can modify policies can potentially use/exfiltrate the managed identity token.
+Restrict APIM write, subscription-secret retrieval, and DCR role-assignment
+rights independently from client key possession. The API key must not confer
+management-plane or workspace-query access.
+
+Keys are sent only in headers. APIM v1 rejects query strings, unknown operations,
+non-protobuf content, compressed/chunked input, missing Content-Length, and
+oversized/empty bodies. Declared length is bounded before reading and actual
+bytes are checked afterward; post-buffer validation alone cannot establish a
+small allocation bound. Fixed backend
+URLs come from independently verified native receipts, not caller input.
+Client credentials are removed before APIM obtains a cached Monitor token
+using managed identity. Do not enable APIM body capture, credential-bearing
+diagnostics, or raw exception output to troubleshoot.
+
+Rate/quota policies limit admitted subscription traffic but are not a precise
+spending ceiling, global DDoS defense, or guarantee against hostile clients.
+Pre-authentication traffic can still consume gateway resources. Stolen valid
+keys can inject fabricated telemetry until revoked. Public authenticated DCE
+endpoints also remain callable by independently authorized Azure principals;
+APIM does not revoke existing direct publishers. Neither the client key nor
+upstream managed identity authenticates resource labels inside an OTLP payload.
+The unchanged Function can also still submit network-admitted, client-anonymous
+data to the shared destination. Therefore **APIM authentication does not make
+every row in the shared LAW authenticated** or prove which ingress produced a
+row. A requirement that all workspace data have client-authenticated ingress
+needs separately approved backend isolation or retirement of other publishers;
+this additive gateway deployment does neither.
+
+Primary/secondary keys support staged rotation; they do not automatically expire.
+Use approved private secret distribution, restart clients after replacement,
+measure revoked-key denial after propagation, and never fall back to the
+anonymous Function automatically. An entire enterprise sharing one key is not
+a fine-grained identity or incident-containment model. Enterprise production
+approval still requires a reviewed tier, availability/cost controls, enrollment,
+secret storage, incident response, privacy notice, and fresh signal acceptance.
+Developer-tier evaluation and native OTLP preview do not establish production
+readiness.
+
 ## Private artifacts and publication
 
 Keep `.local/relay-azure.json`, relay parameters, deployment ZIPs/hashes/readbacks,
@@ -152,6 +209,11 @@ CLI inventory/approval artifacts, `.local/native-deployment.json`, `.local/nativ
 manifests, CLI diagnostics, raw backend responses, workbook definitions/readbacks,
 and browser evidence ignored and private. Resource identifiers and ownership markers
 are sensitive operational metadata even when they are not credentials.
+APIM parameters, intent, inventory, candidate/installed receipts, subscription
+secret responses, rotation results, HTTP probe manifests, and query evidence
+also belong only in private `.local/`. Never output generated keys from Bicep
+or write key values/hashes in source. Reading keys from an environment is
+ephemeral handling, not protection from privileged host inspection.
 Private artifact directories use mode `0700` and files `0600`; do not loosen
 their permissions or use symlinks to bypass receipt checks. The only packaging
 exception is the explicit staged runtime entries (files `0644`, directories
@@ -180,6 +242,9 @@ the workspace setting. Retention settings are not a secure-erasure guarantee.
 The daily cap can interrupt observations and is **not a hard cost ceiling**.
 Flex Consumption execution and relay storage capacity/transactions are
 additional billable resources. A scaling limit does not cap total spending.
+APIM has separate gateway tier/capacity charges even when no telemetry is sent.
+Its native destination is shared with the other paths, so ingestion quotas and
+backend availability are not isolated by the separate APIM resource group.
 Azure Monitor workspace metric ingestion, retention, and billing are separate.
 Unique run/conversation labels increase metric cardinality; bound this to the
 evaluation and design a label policy before wider use. Copilot inference and
@@ -197,6 +262,10 @@ must be reviewed/removed explicitly before native teardown; group deletion
 alone leaves that external assignment. Preserve the
 [resource lifecycle constraints](../AGENTS.md#resource-lifecycle-constraints)
 without changing historical ownership guards or saved-search baselines.
+APIM similarly owns a separate group and fresh marker, with its publisher
+assignment on the native DCR outside that group. Retiring APIM must preserve
+the Function/direct publishers and native resources. No APIM update requires
+workbook redeployment or alteration of historical native receipts.
 
 ## Audit limitations
 

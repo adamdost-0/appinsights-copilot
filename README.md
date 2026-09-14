@@ -6,6 +6,12 @@ managed identity to authenticate to the existing Azure Monitor DCE/DCR.
 Log Analytics stores native traces/events/logs; an Azure Monitor workspace
 stores native metrics. Optional direct authenticated DCE export remains supported.
 
+An alternative [APIM gateway](docs/apim-deployment.md) requires an API-scoped
+subscription key on the client and uses its own managed identity upstream.
+It is independently owned, but deliberately shares the native monitoring
+destination. APIM support is subject to the runbook's live acceptance gates;
+existing Function/direct evidence does not prove this new path.
+
 **Azure native OTLP ingestion is preview, without an SLA, and not recommended
 for production.** The relay does not change that status or provide tamper-proof
 auditing, per-user authorization, privacy filtering, or guaranteed delivery.
@@ -23,8 +29,19 @@ Existing explicit DCE -> DCR
   `-- native histogram metrics ----> Azure Monitor workspace
 
 Optional: approved client + Entra bearer token -> same DCE/DCR directly
+Alternative: client + API-scoped key -> APIM /otlp/v1/{signal} -> same DCE/DCR
 Log Analytics -> seven-panel session workbook (span-based, not metric proof)
 ```
+
+| Path | Client admission | Backend authentication | Deployment |
+| --- | --- | --- | --- |
+| Function (current default) | Approved public egress IP; no client key | Function managed identity | [Separate Function group](docs/relay-deployment.md) |
+| APIM alternative | Dedicated API-scoped subscription key | APIM managed identity | [Separate APIM group](docs/apim-deployment.md) |
+| Direct DCE | Entra Monitor bearer token and DCR publishing role | Client identity | [Native stack](docs/deployment.md) |
+
+An APIM key proves possession of a subscription credential, not a human or
+device identity. Entra audience/scope validation is a distinct future option,
+not an implemented property of subscription-key authentication.
 
 There is no Application Insights component, collector, VM, container, Azure
 Monitor Agent, or portal OTLP opt-in. The relay is a billable Flex Consumption
@@ -45,8 +62,13 @@ authentication.
 2. Deploy the [restricted relay](docs/relay-deployment.md), supplying a
    **nonempty approved IPv4 CIDR allowlist** before creating the app. Package
    only production code/dependencies and deploy with Azure CLI `config-zip`.
-3. Require [fresh no-client-auth logs forwarding and LAW persistence](AGENTS.md#telemetry-evidence),
-   plus off-allowlist denial. CLI spans/events have separate relay proof;
+   Alternatively, use the [authenticated APIM runbook](docs/apim-deployment.md);
+   do not deploy both gateways merely to evaluate one.
+3. For Function, require [fresh no-client-auth logs forwarding and LAW persistence](AGENTS.md#telemetry-evidence),
+   plus off-allowlist denial. For APIM, require the runbook's
+   [authenticated positive/negative and revocation checks](docs/apim-deployment.md#explicit-activation-and-private-key-retrieval)
+   and [fresh LAW/AMW evidence](docs/apim-deployment.md#backend-evidence-and-negative-controls);
+   unauthenticated forwarding must fail. CLI spans/events have separate relay proof;
    **complete CLI signal acceptance is still blocked on native AMW metrics**.
    Privacy and authenticated workbook rendering are independent gates.
 4. After separate organizational approval, configure the local host using
@@ -58,6 +80,12 @@ The relay is isolated in **`rg-copilot-otel-relay`**, tagged
 `copilot-otel-relay`, with its **own fresh ownership marker**. Its publisher
 role assignment is scoped to the existing DCR and needs explicit removal/review
 before native teardown. Do not weaken existing ownership guards.
+
+APIM owns `rg-copilot-otel-apim`, its own ownership marker, and separate private
+receipts. Its only intended existing-stack write is an additive DCR publisher
+assignment. Independent gateway deployment is **not full backend isolation**:
+all paths share ingestion quotas and native availability. No existing Function,
+LAW, AMW, DCE, DCR configuration, or workbook is redeployed by APIM.
 
 Keep original native receipts/baselines and all new relay artifacts under
 ignored, private `.local/`. Never overwrite native state with relay endpoints.
@@ -89,7 +117,7 @@ or the historical record.
 | --- | --- |
 | [Infrastructure contract](infra/README.md) | Existing native contract and new relay modules |
 | [Relay runtime](src/README.md) | Handler configuration, transport limits and local tests |
-| [Deployment](docs/deployment.md) / [relay](docs/relay-deployment.md) | Native and Function Azure CLI runbooks |
+| [Deployment](docs/deployment.md) / [Function](docs/relay-deployment.md) / [APIM](docs/apim-deployment.md) | Separate Azure CLI runbooks and acceptance gates |
 | [Administrators](Administrators.md) | Local-host environment variables, host/user attribution and optional direct authentication |
 | [Agent context](AGENTS.md) | Architecture, evidence boundaries, workbook intent and remaining agent tasks |
 | [Troubleshooting](docs/troubleshooting.md) | Ingress, MI, deployment, routing and backend failures |

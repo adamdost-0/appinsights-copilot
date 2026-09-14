@@ -1,0 +1,37 @@
+<policies>
+  <inbound>
+    <base />
+    <choose>
+      <when condition='@(!Regex.IsMatch(System.Text.Encoding.UTF8.GetString(Convert.FromBase64String("__ENDPOINT_BASE64__")), @"\Ahttps://[a-z0-9-]+(?:\.[a-z0-9-]+)*\.ingest\.monitor\.azure\.com/datacollectionRules/dcr-[a-f0-9]{32}/streams/(?:Microsoft-OTLP-(?:Logs|Traces)|Custom-Metrics-Otel)/otlp/v1/(?:logs|traces|metrics)\z"))'>
+        <return-response>
+          <set-status code="502" reason="Invalid backend configuration" />
+          <set-body>Invalid backend configuration.</set-body>
+        </return-response>
+      </when>
+    </choose>
+    <set-header name="X-Copilot-Telemetry-Key" exists-action="delete" />
+    <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+    <set-header name="Authorization" exists-action="delete" />
+    <set-header name="Proxy-Authorization" exists-action="delete" />
+    <set-header name="Cookie" exists-action="delete" />
+    <set-query-parameter name="subscription-key" exists-action="delete" />
+    <set-query-parameter name="X-Copilot-Telemetry-Key" exists-action="delete" />
+    <set-query-parameter name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+    <set-backend-service base-url='@(new Uri(System.Text.Encoding.UTF8.GetString(Convert.FromBase64String("__ENDPOINT_BASE64__"))).GetLeftPart(UriPartial.Authority))' />
+    <rewrite-uri template='@(new Uri(System.Text.Encoding.UTF8.GetString(Convert.FromBase64String("__ENDPOINT_BASE64__"))).AbsolutePath)' copy-unmatched-params="false" />
+    <set-header name="Host" exists-action="override">
+      <value>@(new Uri(System.Text.Encoding.UTF8.GetString(Convert.FromBase64String("__ENDPOINT_BASE64__"))).Host)</value>
+    </set-header>
+    <authentication-managed-identity resource="https://monitor.azure.com/" ignore-error="false" />
+  </inbound>
+  <backend>
+    <!-- Response-header timeout only, not a total request deadline. Never retry or follow redirects. -->
+    <forward-request timeout="30" follow-redirects="false" buffer-request-body="false" buffer-response="true" fail-on-error-status-code="false" />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>

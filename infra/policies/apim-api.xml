@@ -1,0 +1,134 @@
+<policies>
+  <inbound>
+    <choose>
+      <when condition='@(context.Subscription == null || context.Subscription.Id != "__SUBSCRIPTION_ID__")'>
+        <return-response>
+          <set-status code="403" reason="Forbidden" />
+          <set-body>API-scoped subscription required.</set-body>
+        </return-response>
+      </when>
+    </choose>
+    <rate-limit calls="60" renewal-period="60" />
+    <quota-by-key calls="10000" renewal-period="86400" counter-key='@("copilot-otel-apim:" + context.Subscription.Id)' />
+    <choose>
+      <when condition='@(!String.IsNullOrEmpty(context.Request.OriginalUrl.QueryString))'>
+        <return-response>
+          <set-status code="400" reason="Query strings are not supported" />
+          <set-body>Query strings are not supported.</set-body>
+        </return-response>
+      </when>
+      <when condition='@(context.Request.Headers.GetValueOrDefault("Content-Encoding", "identity").Trim().ToLowerInvariant() != "identity")'>
+        <return-response>
+          <set-status code="415" reason="Unsupported Content Encoding" />
+          <set-body>Only identity content encoding is supported.</set-body>
+        </return-response>
+      </when>
+      <when condition='@{ var contentType = context.Request.Headers.GetValueOrDefault("Content-Type", "").Split(&apos;;&apos;)[0].Trim().ToLowerInvariant(); return contentType != "application/x-protobuf"; }'>
+        <return-response>
+          <set-status code="415" reason="Unsupported Media Type" />
+          <set-body>OTLP protobuf is required.</set-body>
+        </return-response>
+      </when>
+    </choose>
+    <set-variable name="declaredLength" value='@(context.Request.Headers.GetValueOrDefault("Content-Length", ""))' />
+    <choose>
+      <when condition='@(context.Request.Headers.ContainsKey("Transfer-Encoding"))'>
+        <return-response>
+          <set-status code="400" reason="Transfer Encoding is not supported" />
+          <set-body>Fixed-length requests are required.</set-body>
+        </return-response>
+      </when>
+      <when condition='@(!context.Request.Headers.ContainsKey("Content-Length"))'>
+        <return-response>
+          <set-status code="411" reason="Length Required" />
+          <set-body>Content-Length is required.</set-body>
+        </return-response>
+      </when>
+      <when condition='@(!Regex.IsMatch((string)context.Variables["declaredLength"], @"\A(?:0|[1-9][0-9]*)\z"))'>
+        <return-response>
+          <set-status code="400" reason="Invalid Content Length" />
+          <set-body>Content-Length must be a canonical decimal integer.</set-body>
+        </return-response>
+      </when>
+      <when condition='@((string)context.Variables["declaredLength"] == "0")'>
+        <return-response>
+          <set-status code="400" reason="Empty OTLP Body" />
+          <set-body>OTLP body must not be empty.</set-body>
+        </return-response>
+      </when>
+      <when condition='@(((string)context.Variables["declaredLength"]).Length > 7 || Int32.Parse((string)context.Variables["declaredLength"]) > 4194304)'>
+        <return-response>
+          <set-status code="413" reason="Payload Too Large" />
+          <set-body>OTLP payload exceeds 4 MiB.</set-body>
+        </return-response>
+      </when>
+    </choose>
+    <set-variable name="declaredBytes" value='@(Int32.Parse((string)context.Variables["declaredLength"]))' />
+    <!-- Check framing before buffering, then verify actual bytes. Gateway framing normalization
+         remains a live gate; this post-buffer check is not proof of a 4 MiB allocation bound. -->
+    <set-variable name="bodyBytes" value="@(context.Request.Body == null ? 0 : context.Request.Body.As&lt;byte[]&gt;(preserveContent: true).Length)" />
+    <choose>
+      <when condition='@((int)context.Variables["bodyBytes"] == 0)'>
+        <return-response>
+          <set-status code="400" reason="Empty OTLP Body" />
+          <set-body>OTLP body must not be empty.</set-body>
+        </return-response>
+      </when>
+      <when condition='@((int)context.Variables["bodyBytes"] > 4194304)'>
+        <return-response>
+          <set-status code="413" reason="Payload Too Large" />
+          <set-body>OTLP payload exceeds 4 MiB.</set-body>
+        </return-response>
+      </when>
+      <when condition='@((int)context.Variables["bodyBytes"] != (int)context.Variables["declaredBytes"])'>
+        <return-response>
+          <set-status code="400" reason="Content Length Mismatch" />
+          <set-body>Body length does not match Content-Length.</set-body>
+        </return-response>
+      </when>
+    </choose>
+  </inbound>
+  <backend />
+  <outbound>
+    <set-header name="Location" exists-action="delete" />
+    <set-header name="WWW-Authenticate" exists-action="delete" />
+    <set-header name="Authorization" exists-action="delete" />
+    <set-header name="Proxy-Authenticate" exists-action="delete" />
+    <set-header name="Set-Cookie" exists-action="delete" />
+    <set-header name="X-Copilot-Telemetry-Key" exists-action="delete" />
+    <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+    <choose>
+      <when condition="@(context.Response.StatusCode >= 300 &amp;&amp; context.Response.StatusCode &lt; 400)">
+        <return-response>
+          <set-status code="502" reason="Backend redirect rejected" />
+          <set-body>Backend redirect rejected.</set-body>
+        </return-response>
+      </when>
+      <when condition="@(context.Response.StatusCode >= 400)">
+        <set-body>Telemetry backend rejected the request.</set-body>
+      </when>
+    </choose>
+  </outbound>
+  <on-error>
+    <set-variable name="errorStatus" value='@{
+      var reason = context.LastError.Reason;
+      if (reason == "RateLimitExceeded") return 429;
+      if (reason == "QuotaExceeded") return 403;
+      if (reason == "SubscriptionKeyNotFound" || reason == "SubscriptionKeyInvalid") return 401;
+      if (reason == "Timeout") return 504;
+      if (reason == "OperationNotFound") return 404;
+      return 502;
+    }' />
+    <return-response>
+      <set-status code='@((int)context.Variables["errorStatus"])' reason="Telemetry gateway rejected request" />
+      <set-header name="Location" exists-action="delete" />
+      <set-header name="WWW-Authenticate" exists-action="delete" />
+      <set-header name="Authorization" exists-action="delete" />
+      <set-header name="Set-Cookie" exists-action="delete" />
+      <set-header name="Proxy-Authenticate" exists-action="delete" />
+      <set-header name="X-Copilot-Telemetry-Key" exists-action="delete" />
+      <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+      <set-body>Telemetry gateway failure.</set-body>
+    </return-response>
+  </on-error>
+</policies>

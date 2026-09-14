@@ -1,6 +1,7 @@
 # Deploy or update the restricted OTLP Function relay
 
 [Native deployment](deployment.md) | [Administrators](../Administrators.md) |
+[Authenticated APIM alternative](apim-deployment.md) |
 [Agent context and evidence requirements](../AGENTS.md)
 
 The default route is **client without an Azure bearer token or Function key ->
@@ -9,6 +10,9 @@ DCR -> LAW/AMW**. HTTP triggers deliberately use `authLevel: anonymous`.
 The authorization boundary at ingress is the platform IPv4 allowlist, not the
 handler. Any caller sharing an allowed NAT address can submit telemetry and
 consume quota. This is not per-user authorization or a privacy filter.
+For mandatory client credentials use the separately deployed
+[APIM gateway](apim-deployment.md), not a change to this Function's trigger.
+The APIM path does not require a Function deployment or a Function key.
 
 ## Contract and current Microsoft support
 
@@ -254,7 +258,7 @@ az functionapp config access-restriction show -g rg-copilot-otel-relay -n "$RELA
 az functionapp config show -g rg-copilot-otel-relay -n "$RELAY_APP" \
   > .local/relay-config-readback.json
 az role assignment list --scope "$(jq -er .dcr_resource_id .local/relay-azure-candidate.json)" \
-  --all > .local/relay-dcr-roles.json
+  --include-inherited --fill-principal-name false > .local/relay-dcr-roles.json
 ```
 
 Readback must match the exact approved CIDRs/default-deny on app and SCM,

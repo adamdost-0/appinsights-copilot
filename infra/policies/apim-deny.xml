@@ -1,0 +1,16 @@
+<policies>
+  <inbound>
+    <return-response>
+      <set-status code="503" reason="Gateway not activated" />
+      <set-body>Gateway not activated.</set-body>
+    </return-response>
+  </inbound>
+  <backend />
+  <outbound />
+  <on-error>
+    <return-response>
+      <set-status code="503" reason="Gateway not activated" />
+      <set-body>Gateway not activated.</set-body>
+    </return-response>
+  </on-error>
+</policies>

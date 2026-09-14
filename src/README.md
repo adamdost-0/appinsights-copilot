@@ -1,5 +1,12 @@
 # Native OTLP HTTPS relay
 
+This directory also contains **local-only APIM preflight and synthetic test
+tools**. They are not Function runtime code and must not be added to the
+deployment ZIP. APIM uses native gateway policies rather than a second Function.
+See the [independent APIM runbook](../docs/apim-deployment.md) for Azure CLI
+deployment and [Administrators.md](../Administrators.md) for ordinary client
+configuration.
+
 Deploy this directory as the root of a **Node.js 22, Azure Functions runtime v4**
 application. `functions/otlp.js` registers an anonymous HTTP trigger at
 `/v1/{traces,logs,metrics}` (no `/api` prefix). Require HTTPS in the Function App.
@@ -109,3 +116,85 @@ the helper. Their declared values are recorded only in the private run manifest.
 See [administrator attribution guidance](../Administrators.md#opt-in-user-attribution)
 and [recorded relay evidence](../docs/evidence/function-relay.md).
 They are client assertions, not authenticated device or employee identity.
+
+## APIM-authenticated synthetic CLI smoke
+
+`tools/smoke-copilot.mjs` defaults to `--transport function-relay`, preserving
+the existing no-client-auth recipe. Select APIM explicitly and provide the exact
+HTTPS base ending in `/otlp`:
+
+```sh
+node src/tools/smoke-copilot.mjs \
+  --transport apim-gateway \
+  --endpoint https://approved-gateway.azure-api.net/otlp \
+  --run-id UUID --output .local/apim-cli-unique-run
+```
+
+Load `APIM_SUBSCRIPTION_KEY` privately into the parent environment before launch;
+there is intentionally no key CLI argument. The helper validates the credential,
+passes only its encoded `X-Copilot-Telemetry-Key` OTLP header to the isolated
+child, and declares that header secret to Copilot. The source key variable and
+parent Azure credentials/configuration are not passed through. Do not reuse
+the Function endpoint for APIM or add an APIM key to Function mode.
+
+APIM manifests record `transport: apim-gateway` and
+`client_auth: apim-subscription-key`, never the credential. Diagnostics redact
+exact and encoded secret values as well as credential header forms. Keys and
+headers must never appear in tool arguments, environment dumps, Markdown or
+ordinary logs. Redaction is defense in depth, not a host-administrator or
+malicious-plugin boundary.
+
+Both modes keep content capture off and use temporary HOME/CWD outside ancestor
+Git contexts. Output must be a new private directory under this worktree's
+`.local/`; symlink and overwrite guards fail closed. The helper records
+`awaiting_backend_verification`, not ingestion success. Verify fresh LAW
+spans/events and privacy independently; native AMW metrics need separate
+queries. The [APIM E2E runbook](../docs/apim-deployment.md#backend-evidence-and-negative-controls)
+also requires synthetic Logs and authentication/revocation denial controls.
+
+## APIM HTTP probes and offline parameter preflight
+
+Generate parameters only from independently reviewed receipt/readback input:
+
+```sh
+node src/tools/apim-preflight.mjs \
+  --input .local/apim-input.json --output .local/apim-parameters.json
+```
+
+This is a bounded offline Node helper, not a deployment wrapper. It validates
+the native resource/endpoint/stream bindings and writes a new private parameter
+file. Actual Azure reads, review, validation, what-if and deployment remain
+explicit [Azure CLI commands](../docs/apim-deployment.md).
+
+For gateway HTTP acceptance use a privately loaded `APIM_SUBSCRIPTION_KEY`:
+
+```sh
+node src/tools/probe-apim.mjs \
+  --endpoint https://approved-gateway.azure-api.net/otlp \
+  --output .local/apim-probes-unique-run \
+  --include-other-routes --include-boundary
+```
+
+The probe runner sends bounded sequential synthetic requests, never redirects
+or retries automatically, and keeps response bodies/credentials out of evidence.
+It checks valid before/after controls, missing/random credentials, route/method,
+query, media-type, compression, empty-body, oversized fixed-length, and unsupported
+chunked-framing cases. `--include-other-routes` extends credential denial across
+traces/metrics; `--include-boundary` explicitly sends one exactly-4-MiB valid
+protobuf batch of bounded log records. Omit the latter for routine small probes.
+Read actual returned statuses; framing rejection is not streamed-size proof.
+
+`APIM_NEGATIVE_KEY` optionally supplies a real other/broad-scope subscription
+credential. `APIM_RETIRED_KEY` optionally supplies a revoked credential after
+rotation. Random-key testing does not prove either property. Real keys never
+enter query-string probes: those use a fabricated query value alongside the valid
+header. Load and unset all secret variables privately; do not put them in argv.
+
+Output contains fresh case UUIDs/timestamps, expected/observed HTTP outcomes,
+synthetic fixture references, and explicit skipped gates. A successful HTTP suite
+still records `azure_ingestion_proven: false` and pending backend verification.
+Correlate positive/denied markers with LAW and inspect privacy separately; the
+empty body has no transmitted marker. Actual CLI spans/events and native
+metrics remain independent tests. Do not treat these generated Logs as actual
+CLI telemetry. Rate/quota and higher-volume testing need separately bounded
+authorization rather than an automatic flood test.
