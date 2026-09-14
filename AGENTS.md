@@ -80,6 +80,14 @@ relay metrics, Windows/AD/GPO deployment, normal-user monitoring and
 authenticated workbook rendering remain unverified. Do not convert these
 open gates into success claims from historical direct-DCE evidence.
 
+The separate [APIM evidence](docs/evidence/apim-gateway.md) includes authenticated
+synthetic logs, metadata-only actual CLI spans/events, and native AMW
+count/sum queries for token, client-operation and invoke-agent histograms.
+Do not transfer that metric proof to the unchanged Function route. Preserve the
+failed cold-start CLI run and size-boundary evidence, and follow the current
+acceptance status in the APIM evidence file. Successful inference alone does not
+prove exporter flush. No normal-user, Windows/GPO or portal approval follows.
+
 ## Workbook context and agent tasks
 
 The **Copilot CLI - Session Explorer** workbook is an operational view of

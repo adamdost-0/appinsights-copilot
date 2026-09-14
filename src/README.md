@@ -180,8 +180,10 @@ or retries automatically, and keeps response bodies/credentials out of evidence.
 It checks valid before/after controls, missing/random credentials, route/method,
 query, media-type, compression, empty-body, oversized fixed-length, and unsupported
 chunked-framing cases. `--include-other-routes` extends credential denial across
-traces/metrics; `--include-boundary` explicitly sends one exactly-4-MiB valid
-protobuf batch of bounded log records. Omit the latter for routine small probes.
+traces/metrics; `--include-boundary` explicitly sends one exactly-1-MiB valid
+protobuf batch of 128 bounded log records. APIM's 1,048,576-byte ceiling is
+aligned with the observed native logs limit, not a measured maximum for every
+native signal. Function limits remain unchanged. Omit the boundary batch for routine small probes.
 Read actual returned statuses; framing rejection is not streamed-size proof.
 
 `APIM_NEGATIVE_KEY` optionally supplies a real other/broad-scope subscription

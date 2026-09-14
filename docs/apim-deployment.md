@@ -31,7 +31,8 @@ employee attribution, or DLP.
 The API requires an active key in `X-Copilot-Telemetry-Key` and an explicitly
 admitted subscription identity. Only the dedicated API-scoped subscription is
 admitted: APIM's built-in all-access, all-APIs, and product credentials must not
-bypass API-level policy. There is no open product or self-service enrollment.
+bypass API-level policy. The telemetry API has no product membership or
+self-service enrollment.
 APIM keys are shared secrets, not Entra audience/scope JWTs. OAuth would require
 a separate design and client renewal mechanism.
 
@@ -42,7 +43,11 @@ Uncompressed binary `application/x-protobuf` with a canonical `Content-Length`
 is the only APIM v1 representation. Missing length is rejected (411); streamed
 chunked framing is unsupported. Declared size is bounded before body inspection,
 then actual byte length and framing consistency are checked. A post-buffer
-4 MiB check alone would not be a 4 MiB allocation bound on the managed gateway.
+1 MiB check alone would not be a 1 MiB allocation bound on the managed gateway.
+The APIM ceiling is 1,048,576 bytes on every route, conservatively aligned with
+the measured native logs boundary. This does not establish the maximum supported
+by native traces/metrics. The Function retains its separate 4 MiB guard;
+that larger gateway ceiling is not a guarantee of downstream acceptance.
 Gzip is rejected rather than claiming a decompression bound the managed gateway
 has not demonstrated. The existing Function still supports bounded gzip.
 
@@ -146,6 +151,18 @@ expected recurring cost, and budget before first creation. Service creation can
 take many minutes; a deployment timeout is not permission to start a duplicate
 deployment or erase its ownership intent.
 
+For an in-progress or failed deployment, capture its current control-plane
+status without starting another deployment. This is not a readiness check:
+
+```bash
+az deployment sub show -n copilot-otel-apim \
+  > "$APIM_REVIEW_DIR/deployment-status.json"
+jq -r '.properties.provisioningState' "$APIM_REVIEW_DIR/deployment-status.json"
+```
+
+Use a new status filename for later observations; retain failed/in-progress
+results and the original deployment intent.
+
 Azure CLI 2.89 rejects `role assignment list --scope ... --all`: `--all`
 selects subscription-wide enumeration and cannot be combined with scope.
 Use the scoped command above (including inherited assignments) for DCR review.
@@ -192,6 +209,7 @@ JS
 node src/tools/apim-preflight.mjs \
   --input .local/apim-input.json --output .local/apim-parameters.json
 az bicep build --file infra/apim.bicep --stdout >/dev/null
+az bicep build-params --file infra/apim.bicepparam --stdout >/dev/null
 az deployment sub validate -n copilot-otel-apim --location "$APIM_LOCATION" \
   --template-file infra/apim.bicep --parameters @.local/apim-parameters.json \
   > "$APIM_REVIEW_DIR/validation.json"
@@ -226,15 +244,16 @@ export APIM_ID="$(jq -er .apim_resource_id "$APIM_REVIEW_DIR/baseline-candidate.
 export APIM_API_ID="$(jq -er .api_resource_id "$APIM_REVIEW_DIR/baseline-candidate.json")"
 az group show -n rg-copilot-otel-apim > "$APIM_REVIEW_DIR/group.json"
 az resource list -g rg-copilot-otel-apim > "$APIM_REVIEW_DIR/resources.json"
+az account list-locations > "$APIM_REVIEW_DIR/locations.json"
 az rest --method get --url "https://management.azure.com${APIM_ID}?api-version=2024-05-01" \
   > "$APIM_REVIEW_DIR/service.json"
 az rest --method get --url "https://management.azure.com${APIM_API_ID}?api-version=2024-05-01" \
   > "$APIM_REVIEW_DIR/api.json"
-az rest --method get \
-  --url "https://management.azure.com${APIM_ID}/policies/policy?api-version=2024-05-01&format=rawxml" \
+az rest --method get --headers Accept=application/json \
+  --url "https://management.azure.com${APIM_ID}/policies/policy?api-version=2024-05-01&format=xml" \
   > "$APIM_REVIEW_DIR/service-policy.json"
-az rest --method get \
-  --url "https://management.azure.com${APIM_API_ID}/policies/policy?api-version=2024-05-01&format=rawxml" \
+az rest --method get --headers Accept=application/json \
+  --url "https://management.azure.com${APIM_API_ID}/policies/policy?api-version=2024-05-01&format=xml" \
   > "$APIM_REVIEW_DIR/baseline-policy.json"
 az rest --method get \
   --url "https://management.azure.com${APIM_API_ID}/operations?api-version=2024-05-01" \
@@ -246,7 +265,24 @@ az role assignment list --scope "$DCR_ID" --include-inherited --fill-principal-n
 Preserve a baseline-deny receipt before activation, without overwriting it.
 Verify exact solution/marker/location, stable resource IDs, system principal,
 TLS settings, dedicated API path/header/subscription requirement, and the deny
-policy. Enumerate **all** APIs, products, subscriptions, loggers, diagnostics,
+policy. The APIM service GET can return a display location such as `East US`
+while the group and parameters use `eastus`. Bind that display name to the exact
+approved `name` using the saved `az account list-locations` response; do not
+accept an arbitrary nonempty location or change the region to match a typo.
+Check every required TLS setting, not just those present in a response.
+For programmatic comparison, request **`Accept=application/json` and
+`format=xml`**, then parse XML from the returned `.properties.value`.
+`format=rawxml` may return a non-XML-encoded policy document with unescaped C#
+quotes inside attributes; that export is neither a JSON object nor necessarily
+well-formed XML. Azure CLI can warn `Not a json response`. Retain such responses
+privately, but obtain an XML-encoded JSON export for canonical policy comparison;
+do not hand-unescape/rewrite expressions or ignore parse failures.
+The checked-in files are XML-encoded documents and their Bicep content format
+is **`xml`**, not `rawxml`. Submitting encoded C# generics, operators, or
+character literals as `rawxml` can retain entity text inside expressions.
+APIM also requires braces around control-flow bodies in policy expressions;
+ordinary C# single-statement `if (...) return ...;` is rejected by its parser.
+Enumerate **all** APIs, products, subscriptions, loggers, diagnostics,
 revisions, and policies; follow ARM pagination without changing subscription or
 resource scope. Service-level default subscriptions do not count as authorized
 telemetry subscriptions. Capture each operation's policy separately:
@@ -260,7 +296,7 @@ capture_apim_list() {
     *) echo 'Unexpected APIM inventory scope' >&2; return 1 ;;
   esac
   case "$child" in
-    apis|products|subscriptions|loggers|diagnostics|revisions|policies|operations) ;;
+    apis|products|subscriptions|loggers|diagnostics|revisions|policies|operations|backends|policyFragments|namedValues) ;;
     *) echo 'Unexpected APIM child collection' >&2; return 1 ;;
   esac
   base="https://management.azure.com${scope}/${child}"
@@ -274,7 +310,7 @@ capture_apim_list() {
     test "$count" -le 1000
     if grep -Fxq -- "$url" "$seen"; then echo 'Repeated pagination link' >&2; return 1; fi
     printf '%s\n' "$url" >> "$seen"
-    az rest --method get --url "$url" > "$page"
+    az rest --method get --headers Accept=application/json --url "$url" > "$page"
     jq -e '(.value|type) == "array" and (has("error")|not)
       and (.nextLink == null or (.nextLink|type) == "string")' "$page" >/dev/null
     jq -c '.value' "$page" >> "$pages"
@@ -288,7 +324,7 @@ safe_apim_name() {
   local pattern='^[A-Za-z0-9_-][A-Za-z0-9_.;-]*([=][0-9]+)?$'
   [[ "$1" =~ $pattern ]] && test "${#1}" -le 256
 }
-for CHILD in apis products subscriptions loggers diagnostics policies; do
+for CHILD in apis products subscriptions loggers diagnostics policies backends policyFragments namedValues; do
   capture_apim_list "$APIM_ID" "$CHILD" "$APIM_CHILD_DIR/service-$CHILD.json"
 done
 jq -e '.value | all(.[]; (.name|type) == "string")' "$APIM_CHILD_DIR/service-apis.json" >/dev/null
@@ -321,13 +357,13 @@ jq -e '.value | all(.[]; (.name|type) == "string")' "$APIM_CHILD_DIR/service-pro
 jq -r '.value[].name' "$APIM_CHILD_DIR/service-products.json" > "$APIM_CHILD_DIR/product-names.txt"
 while IFS= read -r PRODUCT_ID; do
   safe_apim_name "$PRODUCT_ID"
-  for CHILD in policies apis; do
+  for CHILD in policies apis subscriptions; do
     capture_apim_list "$APIM_ID/products/$PRODUCT_ID" "$CHILD" "$APIM_CHILD_DIR/product-$PRODUCT_ID-$CHILD.json"
   done
 done < "$APIM_CHILD_DIR/product-names.txt"
 for OP_ID in post-logs post-traces post-metrics; do
-  az rest --method get \
-    --url "https://management.azure.com${APIM_API_ID}/operations/${OP_ID}/policies/policy?api-version=2024-05-01&format=rawxml" \
+  az rest --method get --headers Accept=application/json \
+    --url "https://management.azure.com${APIM_API_ID}/operations/${OP_ID}/policies/policy?api-version=2024-05-01&format=xml" \
     > "$APIM_REVIEW_DIR/operation-$OP_ID-policy.json"
 done
 ```
@@ -342,6 +378,16 @@ POSTs; no wildcard operation or other native destination is acceptable.
 Verify the service-level default deny as well as the telemetry API policy.
 Activation intentionally supplies the complete telemetry API admission policy;
 other APIs must not inherit managed-identity forwarding.
+Developer service creation can automatically add an `echo-api`, published
+`starter`/`unlimited` sample products, their subscriptions, and an all-access
+`master` subscription outside the Bicep child list. Inventory them explicitly;
+do not treat their keys as telemetry credentials or silently delete/adopt
+unrelated children. For these new-service defaults, verify the telemetry API is
+not a product member, every sample API/operation inherits the service deny
+before any forwarding, no additional revision bypasses it, and no diagnostic,
+logger, backend, named value, or policy fragment changes that conclusion.
+Any other child or policy drift blocks activation. The sample products are not
+a self-service enrollment path for telemetry.
 Check the assignment ID/principal/role/scope against `apimState`; compare all
 original DCR roles and reject any removal/change.
 
@@ -371,6 +417,19 @@ az deployment sub what-if -n copilot-otel-apim --location "$APIM_LOCATION" \
 
 **Activation gate:** review only the intended admission-policy update and
 dedicated API subscription addition; resources/identity/role must remain stable.
+APIM readback and ARM what-if can differ in representation: XML versus `rawxml`,
+formatted policy whitespace, computed `natGatewayState` (`Unsupported` versus
+the disabled default), or an omitted false `isAgent` field. Compare parsed
+policy contents and exact before/after settings rather than approving every
+`Modify`. The existing publisher's principal may appear as a
+`reference(<exact-owned-service>).identity.principalId` expression; verify that
+the reference resolves to the unchanged read-back system identity and that the
+role ID, definition, and DCR scope are unchanged. An unresolved resource ID or
+different principal is not acceptable.
+The service explicitly pins the legacy portal disabled, public gateway enabled,
+HTTP/2 disabled, and Triple DES disabled, alongside the legacy TLS/SSL disables.
+This prevents omitted defaults from re-enabling the legacy portal on reapply.
+Require the same values in post-activation readback; investigate any other diff.
 Existing modules first reapply deny before activation, so updates deliberately
 interrupt admission while policies change. Schedule that interruption; this is
 not a zero-downtime design. A reapply with activation enabled also requests the
@@ -389,8 +448,8 @@ export APIM_SUBSCRIPTION_ID="$(jq -er .api_subscription_resource_id "$APIM_REVIE
 az rest --method get \
   --url "https://management.azure.com${APIM_SUBSCRIPTION_ID}?api-version=2024-05-01" \
   > "$APIM_REVIEW_DIR/subscription.json"
-az rest --method get \
-  --url "https://management.azure.com${APIM_API_ID}/policies/policy?api-version=2024-05-01&format=rawxml" \
+az rest --method get --headers Accept=application/json \
+  --url "https://management.azure.com${APIM_API_ID}/policies/policy?api-version=2024-05-01&format=xml" \
   > "$APIM_REVIEW_DIR/active-policy.json"
 ```
 
@@ -437,11 +496,29 @@ exercise that additional denial; do not label random-key testing wrong-scope
 proof. Existing service all-access keys can be used only in this bounded
 negative test, never distributed to clients. All credential retrieval uses the
 same receipt-bound `az rest .../listSecrets` pattern to a new private file.
-Use `--include-boundary` for an explicit exactly-4-MiB valid batch probe.
+Use `--include-boundary` for an explicit exactly-1-MiB valid batch of 128 logs.
 Oversized fixed-length input must be rejected as size failure; the chunked
 probe exercises unsupported framing instead, not streamed-size enforcement.
 Rate/quota testing must be separately bounded and avoid flooding the shared
 destination; record those gates as unverified if not executed.
+
+If inference succeeds but telemetry is absent, inspect only gateway request
+counts/status dimensions before changing client configuration. Set a bounded
+UTC interval covering the synthetic runs; these metrics are diagnostics, not
+ingestion proof. Never enable request/body tracing to diagnose credential issues.
+
+```bash
+az monitor metrics list-definitions --resource "$APIM_ID" \
+  > "$APIM_REVIEW_DIR/gateway-metric-definitions.json"
+az monitor metrics list --resource "$APIM_ID" --metric Requests \
+  --interval PT1M --aggregation Total --start-time "$E2E_START" --end-time "$E2E_END" \
+  --filter "ApiId eq 'copilot-otel' and GatewayResponseCode eq '*' and LastErrorReason eq '*'" \
+  > "$APIM_REVIEW_DIR/gateway-request-metrics.json"
+```
+
+Check supported dimensions/aggregation in the definition first, retain each
+observation separately, and allow for metric latency. A successful process exit
+or socket connection does not establish successful OTLP admission or persistence.
 
 ## Key rotation and revocation verification
 
@@ -619,8 +696,12 @@ Function resources, their publishers, all receipts and saved-search baselines.
 - [Subscription listSecrets](https://learn.microsoft.com/en-us/rest/api/apimanagement/subscription/list-secrets?view=rest-apimanagement-2024-05-01)
 - [Primary key regeneration](https://learn.microsoft.com/en-us/rest/api/apimanagement/subscription/regenerate-primary-key?view=rest-apimanagement-2024-05-01)
 - [Forward-request policy](https://learn.microsoft.com/en-us/azure/api-management/forward-request-policy)
+- [Policy export/content formats](https://learn.microsoft.com/en-us/rest/api/apimanagement/api-operation-policy/get?view=rest-apimanagement-2024-05-01)
 
 Record APIM measurements separately from `evidence/function-relay.md` and
 `evidence/v1.md`. No control-plane deployment or HTTP pass establishes native
 metric persistence, Windows/GPO rollout, normal-user monitoring, or authenticated
 workbook rendering.
+The [measured APIM evaluation](evidence/apim-gateway.md) records authenticated
+ingestion, exact-size acceptance, primary/secondary rotation, actual CLI privacy,
+native metric queries, and the remaining limitations independently.

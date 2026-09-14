@@ -196,7 +196,7 @@ and separate organizational approval, not as release testing on ordinary work.
 
 Reconcile organizational resource labels and other approved settings rather
 than erasing them unintentionally. APIM v1 accepts uncompressed binary protobuf
-only; do not configure gzip. The Function's existing bounded gzip support is
+up to 1 MiB per request; do not configure gzip. The Function's existing bounded gzip support is
 unchanged. Generic or per-signal compression overrides must be reconciled before
 launch. Failed export need not stop inference; a working Copilot session is not
 evidence of ingestion.

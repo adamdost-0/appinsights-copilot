@@ -9,8 +9,9 @@ stores native metrics. Optional direct authenticated DCE export remains supporte
 An alternative [APIM gateway](docs/apim-deployment.md) requires an API-scoped
 subscription key on the client and uses its own managed identity upstream.
 It is independently owned, but deliberately shares the native monitoring
-destination. APIM support is subject to the runbook's live acceptance gates;
-existing Function/direct evidence does not prove this new path.
+destination. [Measured APIM evaluation](docs/evidence/apim-gateway.md) includes
+authentication, key rotation and native persistence; production rollout still
+requires the runbook's separate organizational/readiness gates.
 
 **Azure native OTLP ingestion is preview, without an SLA, and not recommended
 for production.** The relay does not change that status or provide tamper-proof
@@ -68,8 +69,8 @@ authentication.
    plus off-allowlist denial. For APIM, require the runbook's
    [authenticated positive/negative and revocation checks](docs/apim-deployment.md#explicit-activation-and-private-key-retrieval)
    and [fresh LAW/AMW evidence](docs/apim-deployment.md#backend-evidence-and-negative-controls);
-   unauthenticated forwarding must fail. CLI spans/events have separate relay proof;
-   **complete CLI signal acceptance is still blocked on native AMW metrics**.
+   unauthenticated forwarding must fail. CLI spans/events have separate Function proof;
+   **complete Function CLI signal acceptance is still blocked on native AMW metrics**.
    Privacy and authenticated workbook rendering are independent gates.
 4. After separate organizational approval, configure the local host using
    [Administrators.md](Administrators.md). Agent context and remaining work for
@@ -106,6 +107,13 @@ were verified on isolated CLI spans and correlated events, not on metric
 series. These are client-supplied labels, not authenticated employee identity;
 Windows, AD and GPO rollout remain untested.
 
+[APIM evaluation evidence](docs/evidence/apim-gateway.md) separately records
+authenticated synthetic logs, actual metadata-only CLI spans/events, and native
+AMW histogram count/sum persistence, exact 1 MiB batch acceptance and key
+revocation. It retains the failed cold-start and original larger-size observations
+alongside the corrected results and remaining production/readiness gates.
+APIM measurements do not close the Function path's metric gate.
+
 [Historical v1 evidence](docs/evidence/v1.md) records the prior **direct,
 authenticated** synthetic execution: 15 spans, 13 events and 26 required
 metric series, plus saved workbook/live-query checks. It is **not relay logs
@@ -115,8 +123,8 @@ or the historical record.
 
 | Guide | Purpose |
 | --- | --- |
-| [Infrastructure contract](infra/README.md) | Existing native contract and new relay modules |
-| [Relay runtime](src/README.md) | Handler configuration, transport limits and local tests |
+| [Infrastructure contract](infra/README.md) | Native contract and independently owned gateway modules |
+| [Runtime and test tools](src/README.md) | Function handler, APIM probes, transport limits and local tests |
 | [Deployment](docs/deployment.md) / [Function](docs/relay-deployment.md) / [APIM](docs/apim-deployment.md) | Separate Azure CLI runbooks and acceptance gates |
 | [Administrators](Administrators.md) | Local-host environment variables, host/user attribution and optional direct authentication |
 | [Agent context](AGENTS.md) | Architecture, evidence boundaries, workbook intent and remaining agent tasks |
