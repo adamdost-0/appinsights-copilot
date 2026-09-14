@@ -39,7 +39,7 @@ resource policies 'Microsoft.ApiManagement/service/apis/operations/policies@2024
   parent: operations[index]
   name: 'policy'
   properties: {
-    format: 'rawxml'
+    format: 'xml'
     value: replace(operationPolicy, '__ENDPOINT_BASE64__', base64(endpoints[index]))
   }
 }]

@@ -16,7 +16,7 @@ resource policy 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = {
   parent: api
   name: 'policy'
   properties: {
-    format: 'rawxml'
+    format: 'xml'
     value: replace(loadTextContent('./policies/apim-api.xml'), '__SUBSCRIPTION_ID__', clientSubscriptionId)
   }
 }

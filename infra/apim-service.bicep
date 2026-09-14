@@ -24,7 +24,11 @@ resource service 'Microsoft.ApiManagement/service@2024-05-01' = {
   properties: {
     publisherEmail: publisherEmail
     publisherName: publisherName
+    legacyPortalStatus: 'Disabled'
+    publicNetworkAccess: 'Enabled'
     customProperties: {
+      'Microsoft.WindowsAzure.ApiManagement.Gateway.Protocols.Server.Http2': 'False'
+      'Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Ciphers.TripleDes168': 'False'
       'Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Protocols.Tls10': 'False'
       'Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Protocols.Tls11': 'False'
       'Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Protocols.Ssl30': 'False'
@@ -39,7 +43,7 @@ resource deny 'Microsoft.ApiManagement/service/policies@2024-05-01' = {
   parent: service
   name: 'policy'
   properties: {
-    format: 'rawxml'
+    format: 'xml'
     value: loadTextContent('./policies/apim-deny.xml')
   }
 }

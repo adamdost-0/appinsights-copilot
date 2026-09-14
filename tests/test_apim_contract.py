@@ -84,10 +84,26 @@ class ApimContractTests(unittest.TestCase):
         self.assertNotIn("secondaryKey", subscription["properties"])
         self.assertFalse(subscription["properties"]["allowTracing"])
 
+    def test_reapply_preserves_gateway_security_and_transport_defaults(self):
+        service = self.resource("apim-service", "Microsoft.ApiManagement/service")
+        properties = service["properties"]
+        self.assertEqual(properties.get("legacyPortalStatus"), "Disabled")
+        self.assertEqual(properties.get("publicNetworkAccess"), "Enabled")
+        for setting in ("Security.Ciphers.TripleDes168", "Protocols.Server.Http2"):
+            self.assertEqual(properties["customProperties"].get(
+                "Microsoft.WindowsAzure.ApiManagement.Gateway." + setting), "False")
+
     def test_activation_is_explicit_and_default_deployment_stays_denied(self):
         self.assertIn("activateGateway", self.compiled()["parameters"])
         self.assertFalse(self.compiled()["parameters"]["activateGateway"]["defaultValue"])
         self.assertEqual(self.module("apim-activate")["condition"], "[parameters('activateGateway')]")
+
+    def test_xml_encoded_policy_files_use_xml_not_rawxml_content_format(self):
+        for module in ("apim-service", "apim-baseline", "apim-operations", "apim-activate"):
+            for resource in self.resources(module):
+                if resource["type"].endswith("/policies"):
+                    with self.subTest(module=module):
+                        self.assertEqual(resource["properties"]["format"], "xml")
 
     def test_gateway_failures_keep_sanitized_auth_throttle_and_timeout_statuses(self):
         policy = self.policy("apim-api.xml")
@@ -101,6 +117,12 @@ class ApimContractTests(unittest.TestCase):
         ):
             self.assertRegex(expression, rf'"{reason}".*?{code}')
         self.assertNotIn("LastError.Message", ET.tostring(policy, encoding="unicode"))
+
+    def test_error_status_control_flow_uses_apim_required_braced_blocks(self):
+        expression = self.policy("apim-api.xml").find("on-error/set-variable").get("value")
+        for code in (429, 403, 401, 504, 404):
+            with self.subTest(code=code):
+                self.assertRegex(expression, rf"if \([^)]*\)\s*\{{\s*return {code};\s*\}}")
 
     def test_https_subscription_header_and_exact_post_operations(self):
         api = self.resource("apim-baseline", "Microsoft.ApiManagement/service/apis")
@@ -139,7 +161,7 @@ class ApimContractTests(unittest.TestCase):
         self.assertTrue(any("Content-Encoding" in text and "identity" in text for text in conditions))
         size = next(n for n in policy.findall("inbound/set-variable") if n.get("name") == "bodyBytes")
         self.assertIn("Body.As<byte[]>(preserveContent: true).Length", size.get("value"))
-        self.assertTrue(any('["bodyBytes"] > 4194304' in text for text in conditions))
+        self.assertTrue(any('["bodyBytes"] > 1048576' in text for text in conditions))
         statuses = {node.get("code") for node in policy.findall("inbound/choose/when/return-response/set-status")}
         self.assertTrue({"400", "403", "411", "413", "415"}.issubset(statuses))
 
@@ -155,7 +177,7 @@ class ApimContractTests(unittest.TestCase):
         self.assertTrue(any('!context.Request.Headers.ContainsKey("Content-Length")' in condition
                             and code == "411" for condition, code in conditions))
         self.assertTrue(any("Regex.IsMatch" in condition and code == "400" for condition, code in conditions))
-        self.assertTrue(any("4194304" in condition and "Length > 7" in condition and code == "413"
+        self.assertTrue(any("1048576" in condition and "Length > 7" in condition and code == "413"
                             for condition, code in conditions), "Declared oversize must fail before buffering")
         after_body = inbound[body_index + 1:]
         mismatch = next((node for block in after_body if block.tag == "choose"
@@ -170,7 +192,7 @@ class ApimContractTests(unittest.TestCase):
         condition = next((text for text in conditions if "Regex.IsMatch" in text), None)
         self.assertIsNotNone(condition, "Canonical Content-Length validation is required")
         pattern = re.search(r'@"([^"]+)"', condition)[1].replace(r"\z", r"\Z")
-        for text in ("0", "1", "4194304", "4194305", "999999999999999999999999"):
+        for text in ("0", "1", "1048576", "1048577", "999999999999999999999999"):
             with self.subTest(canonical=text):
                 self.assertIsNotNone(re.fullmatch(pattern, text))
         for text in ("", "00", "01", "+1", "-1", "1.0", "1e2", " 1", "1 ", "1,1", "1, 1", "1\n"):

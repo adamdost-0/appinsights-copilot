@@ -139,8 +139,8 @@ test('fixed matrix uses private official fixtures and never persists keys or unt
   assert.equal(requests.find(r => r.id === 'wrong-subscription').headers['X-Copilot-Telemetry-Key'], env.APIM_NEGATIVE_KEY);
   assert.equal(requests.find(r => r.id === 'retired-key').headers['X-Copilot-Telemetry-Key'], env.APIM_RETIRED_KEY);
   const oversized = requests.find(r => r.id === 'overlimit-length');
-  assert.equal(oversized.body.length, 4194305);
-  assert.equal(oversized.headers['Content-Length'], '4194305');
+  assert.equal(oversized.body.length, 1048577);
+  assert.equal(oversized.headers['Content-Length'], '1048577');
   assert.equal(oversized.chunked, false);
   const chunked = requests.find(r => r.id === 'unsupported-chunked');
   assert.ok(chunked.body.length < 4096);
@@ -194,6 +194,9 @@ test('CLI help states approved protobuf-only and pre-backend empty-body rejectio
   assert.equal(await probe.main(['--help'], { stdout: text => lines.push(text) }), 0);
   assert.match(lines[0], /Only application\/x-protobuf is permitted; application\/json requires 415/);
   assert.match(lines[0], /Empty bodies require 400 before backend forwarding/);
+  assert.match(lines[0], /1048576-byte protobuf batch acceptance request \(128 synthetic logs\)/);
+  assert.match(lines[0], /Declared 1048577-byte requests require 413/);
+  assert.match(lines[0], /observed native logs HTTP boundary/);
   assert.doesNotMatch(lines[0], /JSON is permitted|application\/octet-stream/);
 });
 
@@ -289,11 +292,13 @@ test('opt-in boundary and overlimit fixtures decode as exact-sized batches of bo
   assert.equal(requests[0].id, 'valid-before');
   assert.equal(requests.at(-1).id, 'valid-after');
   assert.equal(new Set(manifest.cases.map(c => c.run_id)).size, 19);
-  assert.equal(manifest.limits.boundary_bytes, 4194304);
+  assert.equal(manifest.limits.boundary_bytes, 1048576);
+  assert.equal(manifest.limits.overlimit_bytes, 1048577);
+  assert.equal(manifest.limits.boundary_signal, 'logs');
   assert.equal(manifest.skipped.exact_boundary, undefined);
   assert.equal(manifest.status, 'awaiting_backend_verification');
   for (const [id, size] of [
-    ['boundary-acceptance', 4194304], ['overlimit-length', 4194305],
+    ['boundary-acceptance', 1048576], ['overlimit-length', 1048577],
   ]) {
     const request = requests.find(r => r.id === id);
     const entry = manifest.cases.find(c => c.id === id);
@@ -311,7 +316,7 @@ test('opt-in boundary and overlimit fixtures decode as exact-sized batches of bo
     assert.deepEqual(resource.resource.attributes, [{ key: 'service.name', value: { stringValue: 'github-copilot' } }]);
     assert.equal(resource.scopes.length, 1);
     const logs = resource.scopes[0].logs;
-    assert.ok(logs.length > 1 && logs.length <= 1024);
+    assert.equal(logs.length, 128);
     assert.equal(entry.fixture_log_records, logs.length);
     const template = createLogRecord(entry.run_id, Date.parse(entry.fixture_time));
     const records = logs.map(log => {
@@ -330,6 +335,36 @@ test('opt-in boundary and overlimit fixtures decode as exact-sized batches of bo
     });
     assert.deepEqual(Buffer.from(ProtobufLogsSerializer.serializeRequest(records)), bytes);
   }
+});
+
+test('observed native logs HTTP boundary accepts exactly 1 MiB and rejects exactly one byte over', async t => {
+  const output = await destination(t);
+  const observedSizes = [];
+  const result = await probe.runProbes({ endpoint, output, includeBoundary: true }, {
+    env,
+    transport: async request => {
+      if (!['boundary-acceptance', 'overlimit-length'].includes(request.id)) return success(request);
+      observedSizes.push(request.body.length);
+      assert.equal(request.headers['Content-Length'], String(request.body.length));
+      return {
+        status: request.body.length <= 1048576 ? 204 : 413,
+        headers: {},
+        body: request.body.length <= 1048576 ? Buffer.alloc(0) :
+          Buffer.from('Telemetry backend rejected the request.'),
+      };
+    },
+  });
+  assert.deepEqual(observedSizes, [1048576, 1048577]);
+  assert.equal(result.exitCode, 0);
+  const boundary = result.manifest.cases.find(c => c.id === 'boundary-acceptance');
+  const overlimit = result.manifest.cases.find(c => c.id === 'overlimit-length');
+  assert.equal(boundary.status, 204);
+  assert.deepEqual(boundary.expected_statuses, [200, 204]);
+  assert.equal(overlimit.status, 413);
+  assert.deepEqual(overlimit.expected_statuses, [413]);
+  assert.equal(overlimit.http_gate, 'request_size_limit');
+  assert.equal(result.manifest.status, 'awaiting_backend_verification');
+  assert.equal(result.manifest.azure_ingestion_proven, false);
 });
 
 test('boundary option is boolean and strict acceptance failures do not skip final control', async t => {
@@ -400,7 +435,7 @@ test('unsupported chunked framing accepts only 400 or normalized 411 and never p
     assert.equal(entry.fixture_log_records, 1);
     assert.ok(framedRequest.body.length < 4096);
     assert.equal(result.manifest.streamed_size_verification, 'not_applicable_chunked_unsupported');
-    assert.equal(result.manifest.cases.find(c => c.id === 'overlimit-length').http_gate, 'declared_size_limit');
+    assert.equal(result.manifest.cases.find(c => c.id === 'overlimit-length').http_gate, 'request_size_limit');
     assert.equal(result.manifest.cases.at(-1).result, 'passed');
   }
 });

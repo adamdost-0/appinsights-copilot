@@ -13,9 +13,9 @@ const privateRoot = path.join(repository, '.local');
 const timeoutMs = 30000;
 const maxResponseBytes = 65536;
 const maxDiagnosticBytes = 4096;
-const boundaryBytes = 4194304;
+const boundaryBytes = 1048576;
 const overlimitBytes = boundaryBytes + 1;
-const batchLogRecords = 512;
+const batchLogRecords = 128;
 const maxLogPaddingBytes = 8192;
 const keyHeader = 'X-Copilot-Telemetry-Key';
 const protobufType = 'application/x-protobuf';
@@ -24,8 +24,9 @@ const usage = 'Usage: node src/tools/probe-apim.mjs --endpoint https://<host>/ot
   '--output .local/<new-directory> [--include-other-routes] [--include-boundary]\n' +
   'Keys: APIM_SUBSCRIPTION_KEY (required), APIM_NEGATIVE_KEY and APIM_RETIRED_KEY (optional), environment only.\n' +
   'Sends 12-18 sequential synthetic requests, plus one with --include-boundary; query denial uses a fake key with a valid header.\n' +
-  '--include-boundary opts into one exactly 4194304-byte protobuf batch acceptance request (512 synthetic logs).\n' +
-  'Declared 4194305-byte requests require 413; one small chunked request requires 400 (visible Transfer-Encoding) or 411 (normalized missing length).\n' +
+  '--include-boundary opts into one exactly 1048576-byte protobuf batch acceptance request (128 synthetic logs).\n' +
+  'This is the observed native logs HTTP boundary, not proof of a metrics/traces limit or persistence.\n' +
+  'Declared 1048577-byte requests require 413; one small chunked request requires 400 (visible Transfer-Encoding) or 411 (normalized missing length).\n' +
   'Chunked requests are unsupported: neither outcome proves a streamed size bound.\n' +
   'Only application/x-protobuf is permitted; application/json requires 415. Empty bodies require 400 before backend forwarding.\n' +
   'No real URL keys, quota/load tests, or retries.\n' +
@@ -129,7 +130,7 @@ function casesFor(keys, includeOtherRoutes, includeBoundary) {
     { id: 'gzip', expected: [415], encoding: 'gzip' },
     { id: 'query-key', expected: [400, 403], query: true },
     ...(includeBoundary ? [{ id: 'boundary-acceptance', expected: [200, 204], positive: true, boundary: true }] : []),
-    { id: 'overlimit-length', expected: [413], oversized: true, httpGate: 'declared_size_limit' },
+    { id: 'overlimit-length', expected: [413], oversized: true, httpGate: 'request_size_limit' },
     // Managed framing normalization may hide Transfer-Encoding, leaving missing Content-Length.
     { id: 'unsupported-chunked', expected: [400, 411], chunked: true, httpGate: 'unsupported_framing' },
     { id: 'empty', expected: [400], empty: true },
@@ -373,7 +374,7 @@ export async function runProbes(options, { env = process.env, transport = sendHt
     limits: {
       timeout_ms: timeoutMs, max_response_bytes: maxResponseBytes,
       max_diagnostic_bytes: maxDiagnosticBytes,
-      boundary_bytes: boundaryBytes, overlimit_bytes: overlimitBytes,
+      boundary_bytes: boundaryBytes, overlimit_bytes: overlimitBytes, boundary_signal: 'logs',
     },
     skipped: {
       ...(!keys.negative ? { wrong_subscription: 'APIM_NEGATIVE_KEY_not_set' } : {}),

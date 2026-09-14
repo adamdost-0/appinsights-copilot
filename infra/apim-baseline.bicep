@@ -28,7 +28,7 @@ resource deny 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = {
   parent: api
   name: 'policy'
   properties: {
-    format: 'rawxml'
+    format: 'xml'
     value: loadTextContent('./policies/apim-deny.xml')
   }
 }
