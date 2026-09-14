@@ -1,181 +1,114 @@
-# v1 infrastructure contract
+# Infrastructure contracts
 
-This is the infrastructure chapter of the
-[administrator guide](../README.md). Use the
-[deployment workflow](../docs/deployment.md) rather than bypassing ownership
-checks with a direct template deployment.
+[Administrator guide](../README.md) | [Native CLI runbook](../docs/deployment.md) |
+[Relay CLI runbook](../docs/relay-deployment.md) | [Cleanup](../docs/cleanup.md)
 
-## Entry points
+Deploy using the reviewed Markdown **Azure CLI/Bicep commands**. Python is not
+a deployment or cleanup prerequisite. Template compilation is offline contract
+validation, not live resource or ingestion proof.
 
-| File | Responsibility |
+| Template | Scope and responsibility |
 | --- | --- |
-| [`main.bicep`](main.bicep) | Subscription-scope deployment of `rg-copilot-otel-v1` and its resource module |
-| [`resources.bicep`](resources.bicep) | Log Analytics workspace, Azure Monitor workspace, explicit DCE/DCR, scoped roles |
-| [`main.bicepparam`](main.bicepparam) | Nonsecret example parameter shape; not a real ownership receipt |
-| [`visualizations.bicep`](visualizations.bicep) | Separate LAW-linked workbook deployment |
+| [`main.bicep`](main.bicep) | Existing subscription entry, `rg-copilot-otel-v1` |
+| [`resources.bicep`](resources.bicep) | Unchanged native LAW/AMW/DCE/DCR and publisher/operator roles |
+| [`main.bicepparam`](main.bicepparam) | Nonsecret example native parameter shape, not ownership |
+| [`function.bicep`](function.bicep) | New subscription entry, separate `rg-copilot-otel-relay` |
+| [`function-resources.bicep`](function-resources.bicep) | Flex FC1 Node22 app, private blob access, system MI, storage role, app/SCM ingress |
+| [`function-publisher.bicep`](function-publisher.bicep) | Publisher role only, scoped to the existing DCR in its original group |
+| [`visualizations.bicep`](visualizations.bicep) | Existing LAW-associated seven-panel workbook |
 
-```bash
-python3 -m scripts.native_deploy \
-  --subscription "$AZURE_SUBSCRIPTION_ID" --location eastus --what-if
-python3 -m scripts.native_deploy \
-  --subscription "$AZURE_SUBSCRIPTION_ID" --location eastus --apply
-```
+## Unchanged native resources
 
-The deployment wrapper uses Azure CLI, validates the explicit subscription,
-checks providers and ownership, and performs ARM validation and what-if before
-apply. Azure resources are billable. What-if is an Azure operation and creates
-private local receipts/artifacts; it is not an offline test or ingestion proof.
+The dedicated native group uses solution tag `copilot-otel-v1` and its original
+ownership marker. LAW is `PerGB2018`, with requested 30-day retention and
+1 GB/day cap. AMW holds native histogram metrics with separate costs/retention.
+DCR direct OTel sources route spans/events/resources and logs to LAW, metrics
+to AMW, through an explicit public **authenticated** DCE. There is no
+Application Insights resource/reference/connection string or DCR-to-compute
+association. AMW can create separate service-managed ingestion resources;
+do not substitute them for the explicit DCE/DCR.
 
-## Resources and routing
-
-| Resource | Configuration and purpose |
-| --- | --- |
-| Resource group | `rg-copilot-otel-v1`; dedicated to this example |
-| Log Analytics workspace (LAW) | `PerGB2018`; requested 30-day retention, 1 GB/day quota; native `OTelSpans`, `OTelEvents`, `OTelResources` |
-| Azure Monitor workspace (AMW) | Native histogram storage and PromQL query endpoint; independent metric billing and retention |
-| Data Collection Endpoint (DCE) | Explicit public HTTPS ingestion endpoint; Entra bearer authentication required |
-| Data Collection Rule (DCR) | Direct OTel sources routed to LAW and AMW; linked to the explicit DCE |
-| Scoped role assignments | DCR Monitoring Metrics Publisher; AMW Monitoring Data Reader; LAW Log Analytics Reader |
-| Optional workbook deployment | Seven native-table query panels associated with LAW |
-
-There is no Application Insights component, application reference, connection
-string, instrumentation key, portal OTLP opt-in, collector, VM, container, or
-AMA. No DCR-to-compute association is required. Azure may create AMW-managed
-ingestion resources; these are distinct from the explicit DCE/DCR used by the
-CLI. Inspect service-managed resources during lifecycle operations rather than
-substituting their endpoints.
-
-The DCR routes trace spans/events/resources to LAW and metrics to AMW. Its
-optional logs route does not establish CLI logs-exporter support: v1 exercises
-only traces (including span events) and metrics. Resource attributes are
-preserved for run/service correlation. They are untrusted client metadata, not
-an authorization or attestation mechanism.
-
-Public network access is enabled for this evaluation. "Public" does not mean
-unauthenticated; all sending and querying identities need appropriate Entra
-tokens and scoped permissions. Private networking and enterprise credential
-lifecycle are separate design work, not validated features of this example.
-
-Native LAW rows on this no-Application-Insights path have an empty
-`_ResourceId`. They are workspace-scoped, not DCR-associated records; LAW reader
-access and workspace-scoped queries are required. The DCR is still the
-publishing authorization scope, not the value to impose as a row filter.
-
-## Endpoint contract
-
-Use complete signal URLs returned in `.local/native-azure.json`:
+The original native `principalId`/`principalType` publisher and
+`operatorPrincipalId`/`operatorPrincipalType` query roles are unchanged.
+`nativeState` supplies resource IDs, LAW customer ID, DCR immutable ID, AMW
+query origin and exact `traces_endpoint`, `logs_endpoint`, `metrics_endpoint`.
+Source these from verified `.local/native-azure.json` or reviewed
+`az deployment sub show -n copilot-otel-v1 --query properties.outputs.nativeState.value`.
 
 ```text
-traces_endpoint:
-https://<logs-dce-domain>/datacollectionRules/<immutable-dcr-id>/streams/Microsoft-OTLP-Traces/otlp/v1/traces
-
-metrics_endpoint:
-https://<metrics-dce-domain>/datacollectionRules/<immutable-dcr-id>/streams/Custom-Metrics-Otel/otlp/v1/metrics
+traces:  https://<logs-domain>/datacollectionRules/<immutable-id>/streams/Microsoft-OTLP-Traces/otlp/v1/traces
+logs:    https://<logs-domain>/datacollectionRules/<immutable-id>/streams/Microsoft-OTLP-Logs/otlp/v1/logs
+metrics: https://<metrics-domain>/datacollectionRules/<immutable-id>/streams/Custom-Metrics-Otel/otlp/v1/metrics
 ```
 
-The public trace route name differs from internal DCR OTel stream names.
-The metrics stream is case-sensitive and must match the DCR. Traces use the
-logs-ingestion DCE domain but never the logs payload URL. Do not derive one
-signal's URL by appending a suffix to the other.
+Internal OTel stream names differ from public OTLP routes. Do not append a
+signal suffix twice or derive a signal's URL from another signal's endpoint.
+The AMW query origin is not an ingestion URL. Native LAW rows without
+Application Insights have empty `_ResourceId`; query the exact LAW rather
+than filtering rows by DCR ARM ID. Resource attributes are untrusted metadata.
 
-The sending protocol is **HTTPS binary OTLP/HTTP protobuf**, authenticated with
-an Entra Monitor-audience bearer header. See the
-[exact environment contract](../docs/verification.md#exact-exporter-and-authentication-contract).
-The receipt's `metrics_query_endpoint` is the AMW PromQL origin, not an
-ingestion endpoint.
+## New relay resources and security
 
-## Naming and private state
+The separate group has solution tag `copilot-otel-relay` and a **fresh UUID**.
+The Function is anonymous at the HTTP trigger but never open to unmatched
+ingress: a required nonempty `allowedIPv4Cidrs` list, initial app/SCM
+default-deny, HTTPS-only and minimum TLS 1.2 form the platform boundary.
+SCM inherits the app rules; the deploying host must be allowlisted too.
+Do not deploy with `/0`, temporary allow-all, or a create-then-lock-down sequence.
 
-Names use a deterministic `uniqueString(resourceGroup().id)` suffix so distinct
-groups do not share resource names. The solution tag is `copilot-otel-v1`;
-the group and owned resources carry the receipt's `ownership-marker`.
-Role assignments use deterministic scoped identifiers. Repeat apply must
-preserve identities and signal URLs; verify that in fresh readback rather than
-inferring it from template compilation.
+The [parameter preflight](../docs/relay-deployment.md#prepare-parameters-without-changing-native-state)
+validates canonical IPv4 networks and required full **HTTPS**, credential-free,
+native URLs, immutable DCR routes and current subscription. Bicep enforces
+nonempty/length contracts; do not claim it performs regex/URL host validation.
+The runtime validates upstream URLs as an additional boundary, not a substitute
+for approved endpoint provenance. No secret parameter or generated key is used.
 
-An intentional rebuild is different: a matching completed teardown receipt,
-with the recorded managed group still absent, permits new workspace customer
-and immutable DCR IDs while retaining the ownership marker. Keep active
-receipts in place for that checked transition.
+The deliberately **system-assigned** identity uses `ManagedIdentityCredential()`
+without a client ID. It has Storage Blob Data Owner on the relay-only account
+for HTTP host/deployment storage, and Monitoring Metrics Publisher on the
+exact native DCR. Shared-key and anonymous blob access are disabled. Storage
+network access remains public but authenticated; private networking is not
+claimed. The relay is billable and adds operational/cold-start/availability
+dependencies; it is not a collector, durable queue or DLP filter.
 
-`.local/native-deployment.json` records the ownership intent before deployment.
-`.local/native-azure.json` records validated resource/runtime metadata after
-deployment, including subscription/group/location, ownership marker, LAW ARM
-and customer IDs, AMW ARM ID/query endpoint, DCE/DCR IDs, immutable DCR ID, and
-full signal endpoints. Neither is a credential store; both remain private.
-No Application Insights resource identifier or connection string is required.
+`OTLP_TRACES_ENDPOINT`, `OTLP_LOGS_ENDPOINT`, `OTLP_METRICS_ENDPOINT` contain the
+upstream native URLs. The `relayState` output supplies the function app name,
+ARM ID, principal, storage ARM ID, `/v1/{traces,logs,metrics}` URLs, and exact
+`publisher_role_assignment_id`. Keep it separately in `.local/relay-azure.json`;
+never replace `nativeState` or distribute private ownership receipts to clients.
 
-Before writing runtime state, an independent ARM GET checks the exact LAW ID,
-location, ownership marker, and `properties.customerId`. This binds the query
-customer UUID to the deployment's LAW rather than relying on a row-level
-`_ResourceId`.
+Use modern **Flex OneDeploy via Azure CLI `config-zip`**, not the legacy Kudu
+ZipDeploy REST API. Package the runtime **contents of `src`** at ZIP root:
+`host.json`, manifests, `relay.js`, `transport.js`, `functions/` and production
+dependencies only, never an enclosing `src/` or its tests/tools.
+No Python deploy scripts or `func publish` are
+required. [The relay runbook](../docs/relay-deployment.md) documents current
+Microsoft sources, exact settings, ZIP inspection, updates and rollback.
 
-The first fresh successful apply writes
-`.local/native-workspace-children.json` with `schema_version: 1`, the
-subscription/group/LAW/customer/ownership binding, and a `saved_searches` map
-from exact child ARM IDs to SHA-256 hashes of their full canonical JSON entries.
-Only validated Azure-default saved-search shapes can enter this baseline;
-matching a name or prefix alone is never deletion authorization.
+## Ownership, teardown and proof
 
-Teardown requires the exact saved-search set and hashes to remain unchanged.
-It first performs a fresh LAW ARM/location/ownership/customer-ID check, so a
-same-name replacement workspace cannot reuse an earlier baseline.
-Missing, changed, or new searches, custom tables, unexpected nonempty child
-collections, and incomplete/error inventories cause refusal. Microsoft tables
-must have the provider's Microsoft `tableType`. Normal repeat apply preserves
-the private baseline byte-for-byte; a verified teardown/recreation rebinds it to
-the new workspace customer UUID. An existing deployment without a baseline
-cannot be adopted automatically through what-if, apply, or teardown.
+Keep all historical native lifecycle receipts and exact saved-search hash
+baseline intact. CLI deployment does not automatically reproduce the legacy
+Python inventory/teardown guard or authorize adoption of an existing group.
+New CLI-managed inventory and operator approvals remain separate private
+artifacts. Wrong markers, changed customer UUIDs, incomplete inventory,
+unknown consumers or child drift must stop lifecycle changes.
 
-Keep **four active lifecycle receipts** once cleanup has been attempted:
-`native-deployment.json`, `native-azure.json`, `native-workspace-children.json`,
-and the teardown command's `native-teardown.json`, all under `.local/`.
-The baseline is a private `0600` file, not a published example or an editable
-allowlist for adopting existing workspace children.
-
-Preserve receipts across retries and repeat apply. Do not fabricate, overwrite,
-or delete them to adopt an existing group. Same solution tags alone are not
-proof of ownership. A partial deployment can leave Azure resources even if a
-later validation step fails; inspect retained receipts and deployment state
-before recovery. If ARM succeeded but readback prevented both operational state
-and baseline writes, preserve `.local/native-deployment-result.json` and use
-the [reviewed bootstrap recovery](../docs/deployment.md#recover-an-interrupted-first-apply).
-The saved result is candidate evidence, never a substitute operational receipt.
-Ownership tags are accident-prevention controls, not security
-against an administrator able to forge tags or edit files.
-
-Keep the group exclusive to this solution and serialize deployment, smoke,
-workbook, and cleanup operations. Generic ARM inventory does not guarantee that
-every provider child or external consumer is visible. Follow
-[cleanup and rebuild](../docs/deployment.md#cleanup-and-rebuild) and preserve any
-explicit refusal rather than broadening deletion.
-
-## Retention and proof boundaries
-
-Read back actual workspace and OTel table analytics/total retention after the
-fresh deployment. A 30-day workspace setting alone does not prove every table's
-retention. The 1 GB/day LAW cap is not a total cost ceiling and does not cap AMW
-metric ingestion. Cardinality, other Azure charges, and Copilot inference need
-separate budgeting.
+The relay's DCR publisher assignment is **outside its own group**. Remove or
+explicitly review that exact assignment before native teardown; adding the
+Function/storage to the native group or changing the v1 teardown guard is not
+acceptable. Recreating the system identity also requires stale-role cleanup.
+Let AMW remove its own managed group through its supported lifecycle.
 
 ```bash
-az bicep build --file infra/main.bicep --stdout > /dev/null
-az bicep build --file infra/resources.bicep --stdout > /dev/null
-az bicep build-params --file infra/main.bicepparam --stdout > /dev/null
+az bicep build --file infra/main.bicep --stdout >/dev/null
+az bicep build --file infra/resources.bicep --stdout >/dev/null
+az bicep build-params --file infra/main.bicepparam --stdout >/dev/null
+az bicep build --file infra/function.bicep --stdout >/dev/null
+az bicep build --file infra/visualizations.bicep --stdout >/dev/null
 ```
 
-Compilation can warn when local Bicep type metadata is unavailable for a
-preview API. Record the real warning and separately require ARM validation and
-resource readback; neither suppressing the warning nor compiling proves
-ingestion. Fresh deployment, repeat apply, and required native signal checks
-[passed](../docs/evidence/v1.md); workbook acceptance remains separate.
-Native OTLP remains preview, without an SLA, and not recommended for production.
-
-## Sources
-
-- [Manual orchestration; Application Insights is optional](https://learn.microsoft.com/en-us/azure/azure-monitor/containers/opentelemetry-protocol-ingestion#option-2-manual-resource-orchestration)
-- [Azure native OTLP overview and SDK endpoint configuration](https://learn.microsoft.com/en-us/azure/azure-monitor/containers/collect-use-observability-data)
-- [DCE schema](https://learn.microsoft.com/en-us/azure/templates/microsoft.insights/2024-03-11/datacollectionendpoints)
-- [DCR schema](https://learn.microsoft.com/en-us/azure/templates/microsoft.insights/2024-03-11/datacollectionrules)
-- [LAW schema](https://learn.microsoft.com/en-us/azure/templates/microsoft.operationalinsights/2023-09-01/workspaces)
-- [AMW schema](https://learn.microsoft.com/en-us/azure/templates/microsoft.monitor/2025-10-03/accounts)
+Read actual retention at table level; the LAW cap is not a total cost ceiling.
+Native OTLP remains **preview, no SLA, not recommended for production**.
+[Historical direct-auth evidence](../docs/evidence/v1.md) is unchanged and must
+not be presented as relay forwarding, standalone logs, or portal-render proof.

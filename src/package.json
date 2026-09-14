@@ -1,0 +1,27 @@
+{
+  "name": "copilot-otlp-relay",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "functions/otlp.js",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check relay.js && node --check transport.js && node --check functions/otlp.js && node --check tools/generate-logs-fixture.js"
+  },
+  "files": [
+    "functions/",
+    "relay.js",
+    "transport.js",
+    "host.json"
+  ],
+  "dependencies": {
+    "@azure/functions": "4.16.2",
+    "@azure/identity": "4.13.2"
+  },
+  "devDependencies": {
+    "@opentelemetry/otlp-transformer": "0.222.0"
+  }
+}

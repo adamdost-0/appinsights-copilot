@@ -1,47 +1,62 @@
-# LinkedIn v1 draft
+# LinkedIn draft: restricted managed-identity relay
 
 **Draft only: not posted. The repository remains private.**
 
 ---
 
-Azure Administrators: GitHub Copilot CLI can be monitored without deploying a
-collector, VM, container, or Application Insights component.
+Azure administrators: this example adds a small Azure Function in front of
+Azure Monitor's native OTLP ingestion.
 
-This v1 administrator example configures the CLI to send binary OTLP/HTTP
-protobuf directly over HTTPS, with a required Microsoft Entra bearer token, to
-manually provisioned Azure Monitor DCE/DCR resources:
+Copilot CLI sends binary OTLP/HTTP over HTTPS **without a client Azure token or
+Function key**, from explicitly allowed IPv4 networks. The Node 22 Function
+uses managed identity to authenticate to the existing DCE/DCR. App and
+deployment ingress default to deny; this is not an anonymous endpoint open to
+the internet. Optional direct export with an Entra bearer token remains available.
 
-- Log Analytics stores native spans, span events, and resource metadata.
-- An Azure Monitor workspace stores native histogram metrics.
-- A seven-panel Log Analytics workbook explores sessions, chat token usage,
-  latency, tools, spans, and events; AMW metric verification is separate.
+Log Analytics holds native traces, events and logs; an Azure Monitor workspace
+holds histogram metrics. A seven-panel LAW workbook explores sessions, reported
+chat tokens, latency, tools and traces. Its charts use span data, not native
+metric proof. No Application Insights component, collector, VM or container is
+required.
 
-The guide covers an Azure CLI rebuild, scoped publishing/query roles,
-metadata-only defaults, explicitly selected synthetic content tests, bounded
-verification, private evidence, retention, and cleanup. A separate onboarding
-recipe covers organizationally approved metadata-only normal sessions; release
-proof remains synthetic-only.
+Deployment is now documented **Azure CLI + Bicep commands in Markdown**:
+native resources, the separate relay group, production ZIP deployment, workbook
+updates and reviewed cleanup. Python smoke/query utilities remain optional
+tests, not deployment prerequisites. The relay's DCR role assignment needs
+explicit review on teardown because its scope is outside the relay group.
 
-All three fresh synthetic scenarios passed native backend verification: 15
-spans, 13 events, and 26 required histogram series. The saved workbook and all
-seven live panel queries also passed. A separate isolated synthetic session
-confirmed that conversation-based navigation works without experimental
-run/scenario labels. Authenticated portal rendering is not verified; no
-screenshot or real-user monitoring result is claimed.
+The final corrected-isolation relay run persisted one synthetic log, two actual
+CLI spans and three correlated events, with message content capture off.
+The initial harness allowed ancestor Git repository/branch metadata into
+telemetry; the accepted replacement executed outside the checkout.
+Platform denial was
+also tested by removing the sole allowed source rule while keeping default
+Deny, observing HTTP 403, and restoring the identical rule; no allow-all window
+was introduced. Relay native metrics remain unverified, so complete CLI
+signal acceptance is still open. Handler rejection tests alone
+would not establish network denial.
 
-Important boundaries: Azure native OTLP ingestion remains preview, without an
-SLA and not recommended for production. "v1" labels the example, not service GA.
-Client telemetry is useful for observability, not a tamper-proof or complete
-security audit. A LAW daily cap is not a total solution cost ceiling.
+The historical direct-authenticated v1 synthetic evaluation independently
+passed native span/event/metric checks and workbook live queries. **Those
+historical metrics are not relay metric proof.** Authenticated portal rendering
+and normal-user monitoring are not claimed.
 
-The repository is currently private; this post does not promise public access.
+Important limits: native Azure OTLP is **preview, without an SLA and not
+recommended for production**. Allowlisted NAT peers can all submit data;
+network admission is not per-user authentication. Metadata-only is the default,
+but the relay is not a privacy filter or complete/tamper-proof security audit.
+Functions/storage, metrics and inference cost money; a LAW cap is not a total
+solution spending ceiling.
 
-#AzureMonitor #LogAnalytics #GitHubCopilot #OpenTelemetry #AzureAdministrators
+The repository is private; this draft does not promise public access.
+
+#AzureMonitor #AzureFunctions #ManagedIdentity #GitHubCopilot #OpenTelemetry
 
 ---
 
-Before publication, review [fresh v1 evidence](evidence/v1.md) and accurately
-update the verification sentence from measured outcomes. Preserve preview,
-privacy, and repository-access qualifications. Do not attach private receipts,
-run identifiers, raw payloads, credentials, or unreviewed screenshots.
-Publishing or changing repository visibility requires separate authorization.
+Before publication, review [historical v1 evidence](evidence/v1.md) and the
+parent-maintained [relay evidence](evidence/function-relay.md). Update pending
+checks only from measured outcomes. Preserve preview, privacy,
+ingress and repository-access qualifications. Never attach receipts, raw
+payloads, credentials, private IDs or unreviewed screenshots. Publication and
+visibility changes require separate authorization.

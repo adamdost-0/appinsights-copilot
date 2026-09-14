@@ -1,0 +1,9 @@
+.git*
+local.settings.json
+test/
+tools/
+README.md
+coverage/
+*.pb
+*.tgz
+node_modules/@opentelemetry/
