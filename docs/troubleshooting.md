@@ -1,6 +1,6 @@
 # Troubleshooting relay and optional direct OTLP
 
-[Administrator guide](../README.md) | [Verification](verification.md)
+[Administrator guide](../Administrators.md) | [Evidence requirements](../AGENTS.md#telemetry-evidence)
 
 Diagnose **local prerequisites -> platform ingress -> identity -> exact exporter configuration ->
 completed CLI run -> Azure routing -> backend queries -> workbook**.
@@ -21,7 +21,7 @@ inference or recreate resources blindly.
 | Relay 5xx or upstream 401/403 | Check MI acquisition, approved upstream HTTPS URLs, Monitor audience and the **relay principal's** publisher role on the exact DCR. Caller Azure credentials do not fix the relay's identity. Keep error diagnostics bounded and payload/token-free. |
 | Relay 404 / wrong route | Verify `host.json` route prefix and registered v4 HTTP routes `/v1/traces`, `/v1/logs`, `/v1/metrics`; inspect package root/manifest entrypoint and prod dependencies. |
 | Relay HTTP success but no log row | Query actual LAW/native logs schema, fresh marker/service/time window, DCR logs route and OTLP partial success. Logs evidence is not CLI span events or metrics proof. |
-| No off-network test host | Use only an approved fail-closed same-host test as described in [verification](verification.md#relay-no-client-auth-acceptance): remove its allow rule while retaining Deny, observe 403, then restore the exact rule and read back. If neither method is authorized, report live denial unverified. Spoofed headers and SCM configuration readback are not live SCM denial proof. |
+| No off-network test host | Use only an approved fail-closed same-host test: remove its allow rule while retaining Deny, observe 403, then restore the exact rule and read back. Preserve the [evidence boundaries](../AGENTS.md#telemetry-evidence). If neither method is authorized, report live denial unverified. Spoofed headers and SCM configuration readback are not live SCM denial proof. |
 | Optional Python test preflight blocked | Python is needed only for existing smoke/query utilities, not deployment. Resolve the named test/tool/authentication check. Run `copilot help monitoring` for the installed version. Do not disguise a blocked result as a warning. |
 | Deployment authorization/policy failure | Confirm the explicit subscription, public `AzureCloud`, registered providers, region policy, and permissions to deploy and assign roles. Do not weaken policy or silently switch subscriptions. |
 | Ownership refusal | Retain `.local/native-deployment.json` and `.local/native-azure.json`. Check exact group, location, marker, and inventory. Do not forge receipts, adopt same-named resources, or remove unrelated resources to pass. |
@@ -49,7 +49,8 @@ lossless trace export or authenticated UI rendering. Record the precise failure
 stage in a new sanitized relay evidence record only after actual measurement,
 keeping raw data private. [v1 evidence](evidence/v1.md) remains historical direct-auth proof.
 
-For safe cleanup and a new deployment, use the
-[reviewed CLI lifecycle](cleanup.md); explicitly remove/review the relay's
+For safe retirement and a new deployment, follow the
+[resource lifecycle constraints](../AGENTS.md#resource-lifecycle-constraints)
+with separately approved Azure CLI commands; explicitly remove/review the relay's
 external DCR role before native teardown. Never use a
 generic broad delete to bypass an ownership refusal.

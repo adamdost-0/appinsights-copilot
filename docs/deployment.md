@@ -1,7 +1,7 @@
 # Deploy and rebuild with Azure CLI
 
-[Administrator guide](../README.md) | [Relay deployment](relay-deployment.md) |
-[Workbook](visualizations.md) | [Cleanup](cleanup.md)
+[Administrator guide](../Administrators.md) | [Relay deployment](relay-deployment.md) |
+[Agent and workbook context](../AGENTS.md)
 
 These are operator-executed **Bash + Azure CLI + Bicep** runbooks, not Python
 deployment wrappers. Read each review gate before executing its following
@@ -124,8 +124,8 @@ properties.parameters` if necessary. Never overwrite the original receipts.
 
 For an existing group, require its exact subscription, location, solution tag
 `copilot-otel-v1`, ownership marker, resource IDs and inventory to match the
-private receipts. Review workspace children and external consumers as in
-[cleanup](cleanup.md), but **do not delete anything**. Refuse unexpected
+private receipts. Review workspace children and external consumers using
+[read-only inventory capture](#capture-native-inventory), but **do not delete anything**. Refuse unexpected
 resources or drift. ARM what-if is not an ownership check.
 
 ```bash
@@ -203,7 +203,7 @@ test -f "$NATIVE_STATE"
 ```
 
 Now preserve a private full workspace-child inventory using
-[cleanup's read-only capture](cleanup.md#capture-native-inventory) in the same
+[read-only inventory capture](#capture-native-inventory) in the same
 shell. Record operator approval separately. Then install the validated candidate
 without overwriting any operational receipt and select the installed receipt:
 
@@ -217,8 +217,71 @@ export NATIVE_STATE=.local/native-azure.json
 
 This does not create a historical Python child-baseline receipt. Do not
 manufacture one or claim its automatic teardown guard has run. The explicit
-CLI [cleanup review](cleanup.md) is the lifecycle for a CLI-managed deployment.
+CLI lifecycle requires separately reviewed commands and approval under the
+[resource lifecycle constraints](../AGENTS.md#resource-lifecycle-constraints).
 Existing baseline receipts remain authoritative and unchanged.
+
+## Capture native inventory
+
+This is read-only Azure access for initial deployment and subsequent ownership
+review. Use the private shell above and the explicitly selected `NATIVE_STATE`
+candidate or installed receipt. Each capture gets a new private directory;
+retain the original approved snapshot and never overwrite a baseline.
+
+```bash
+export NATIVE_STATE="${NATIVE_STATE:-.local/native-azure.json}"
+export INVENTORY_DIR="$(mktemp -d "$PWD/.local/native-inventory.XXXXXXXX")"
+export LAW_ID="$(jq -er .workspace_resource_id "$NATIVE_STATE")"
+export AMW_ID="$(jq -er .azure_monitor_workspace_resource_id "$NATIVE_STATE")"
+az group show -n rg-copilot-otel-v1 > "$INVENTORY_DIR/group.json"
+az resource list -g rg-copilot-otel-v1 > "$INVENTORY_DIR/resources.json"
+az rest --method get --url "https://management.azure.com${LAW_ID}?api-version=2023-09-01" \
+  > "$INVENTORY_DIR/law.json"
+az rest --method get --url "https://management.azure.com${AMW_ID}?api-version=2025-10-03" \
+  > "$INVENTORY_DIR/amw.json"
+az role assignment list --scope "$(jq -er .dcr_resource_id "$NATIVE_STATE")" --all \
+  > "$INVENTORY_DIR/dcr-roles.json"
+az role assignment list --scope "$LAW_ID" --all > "$INVENTORY_DIR/law-roles.json"
+az role assignment list --scope "$AMW_ID" --all > "$INVENTORY_DIR/amw-roles.json"
+
+capture_children() {
+  local child="$1" api="$2" url page pages
+  url="https://management.azure.com${LAW_ID}/${child}?api-version=${api}"
+  pages="$(mktemp "$INVENTORY_DIR/pages.XXXXXXXX")"
+  page="$(mktemp "$INVENTORY_DIR/page.XXXXXXXX")"
+  while test -n "$url"; do
+    case "$url" in
+      "https://management.azure.com${LAW_ID}/"*) ;;
+      *) echo "Unexpected pagination scope" >&2; return 1 ;;
+    esac
+    az rest --method get --url "$url" > "$page"
+    jq -e '(.value|type) == "array" and (has("error")|not)' "$page" >/dev/null
+    jq -c '.value' "$page" >> "$pages"
+    url="$(jq -er '.nextLink // ""' "$page")"
+  done
+  jq -s '{value:add}' "$pages" > "$INVENTORY_DIR/$child.json"
+  rm -- "$page" "$pages"
+}
+capture_children tables 2023-09-01
+capture_children savedSearches 2020-08-01
+capture_children dataExports 2020-08-01
+capture_children linkedServices 2020-08-01
+capture_children linkedStorageAccounts 2020-08-01
+```
+
+Verify exact LAW ARM/customer identity, location, ownership marker and complete
+resource scope against the original receipt. Review tables, saved searches,
+exports and links; foreign/custom children or unexpected consumers block an
+update until explicitly reviewed. Generic resource listing does not enumerate
+every child: inspect locks, policies, diagnostics, workbooks and external
+consumers through their owning resource/provider surfaces.
+
+Where the historical workspace-child baseline exists, compare its exact
+LAW/customer/ownership binding, saved-search ID set and canonical-JSON SHA-256
+hashes. Do not replace full-content comparison with name-prefix matching or
+initialize a replacement baseline to suppress drift. Preserve operator
+approval separately. This capture does not approve deletion or prove that
+every possible external dependency has been discovered.
 
 ## Recover an interrupted first apply
 
@@ -235,7 +298,7 @@ until that workflow's own recovery requirements are met.
 ## Continue and rebuild
 
 Deploy the [restricted relay](relay-deployment.md), then require fresh
-[logs forwarding and backend proof](verification.md#relay-no-client-auth-acceptance).
+[logs forwarding and backend proof](../AGENTS.md#telemetry-evidence).
 A deployment, token, HTTP 2xx, or empty-payload HTTP 400 is not persistence proof.
 Allow bounded DCE/RBAC propagation and report failures rather than silently
 retrying inference forever.
@@ -245,8 +308,10 @@ The requested 30 days and 1 GB/day LAW cap are **not a total cost ceiling or
 table-level secure-erasure guarantee**; AMW metrics and relay storage/compute
 have separate costs.
 
-For a rebuild, first complete [reviewed cleanup](cleanup.md), including the
-relay's cross-group DCR assignment and AMW-managed group's disappearance.
+For a rebuild, first obtain explicit retirement approval and separately
+reviewed Azure CLI commands under the
+[resource lifecycle constraints](../AGENTS.md#resource-lifecycle-constraints),
+including the relay's cross-group DCR assignment and AMW-managed group's disappearance.
 Archive old CLI-managed receipts privately, retain historical lifecycle
 receipts intact, and explicitly approve new deployment intent. Never reuse
 old run evidence against replacement workspace/DCR identities. Repeat native

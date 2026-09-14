@@ -45,13 +45,13 @@ authentication.
 2. Deploy the [restricted relay](docs/relay-deployment.md), supplying a
    **nonempty approved IPv4 CIDR allowlist** before creating the app. Package
    only production code/dependencies and deploy with Azure CLI `config-zip`.
-3. Require [fresh no-client-auth logs forwarding and LAW persistence](docs/verification.md#relay-no-client-auth-acceptance),
+3. Require [fresh no-client-auth logs forwarding and LAW persistence](AGENTS.md#telemetry-evidence),
    plus off-allowlist denial. CLI spans/events have separate relay proof;
    **complete CLI signal acceptance is still blocked on native AMW metrics**.
    Privacy and authenticated workbook rendering are independent gates.
-4. After separate organizational approval, use the [relay client recipe](docs/usage.md).
-   Deploy the [workbook](docs/visualizations.md) with Azure CLI and follow
-   [reviewed cleanup](docs/cleanup.md) when retiring resources.
+4. After separate organizational approval, configure the local host using
+   [Administrators.md](Administrators.md). Agent context and remaining work for
+   the [workbook](AGENTS.md#workbook-context-and-agent-tasks) live in `AGENTS.md`.
 
 The native group stays **`rg-copilot-otel-v1`**, tagged `copilot-otel-v1`.
 The relay is isolated in **`rg-copilot-otel-relay`**, tagged
@@ -73,7 +73,7 @@ directories outside the repository to prevent ancestor Git metadata capture;
 use the final evidence there, not the initial checkout-local run's UUID/counts.
 **Relay native metrics ingestion is not verified**; do not
 treat the configured metrics route as measured proof.
-Opt-in Linux [hostname and user attribution](docs/usage.md#opt-in-user-attribution)
+Opt-in Linux [hostname and user attribution](Administrators.md#opt-in-user-attribution)
 were verified on isolated CLI spans and correlated events, not on metric
 series. These are client-supplied labels, not authenticated employee identity;
 Windows, AD and GPO rollout remain untested.
@@ -90,12 +90,10 @@ or the historical record.
 | [Infrastructure contract](infra/README.md) | Existing native contract and new relay modules |
 | [Relay runtime](src/README.md) | Handler configuration, transport limits and local tests |
 | [Deployment](docs/deployment.md) / [relay](docs/relay-deployment.md) | Native and Function Azure CLI runbooks |
-| [Usage](docs/usage.md) | Default no-client-token relay; optional direct authentication |
-| [Verification](docs/verification.md) | Separate logs, CLI, metric, privacy and UI acceptance |
-| [Visualizations](docs/visualizations.md) | Seven-panel LAW workbook, no Python deployment prerequisite |
+| [Administrators](Administrators.md) | Local-host environment variables, host/user attribution and optional direct authentication |
+| [Agent context](AGENTS.md) | Architecture, evidence boundaries, workbook intent and remaining agent tasks |
 | [Troubleshooting](docs/troubleshooting.md) | Ingress, MI, deployment, routing and backend failures |
-| [Security](docs/security-and-data.md) / [cleanup](docs/cleanup.md) | Data/access/cost and reviewed lifecycle |
-| [LinkedIn draft](docs/linkedin.md) | Unpublished introduction with evidence boundaries |
+| [Security](docs/security-and-data.md) | Data, access, retention and cost boundaries |
 
 The repository remains **private**. Documentation does not authorize commits,
 pushes, publishing evidence, changing visibility, or exporting normal-user

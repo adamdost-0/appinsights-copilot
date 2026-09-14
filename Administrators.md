@@ -1,7 +1,7 @@
-# Onboard approved normal CLI sessions
+# Administrator guide: local Copilot CLI configuration
 
-[Administrator guide](../README.md) | [Privacy](security-and-data.md) |
-[Workbook](visualizations.md)
+[Repository overview](README.md) | [Privacy](docs/security-and-data.md) |
+[Workbook context](AGENTS.md#workbook-context-and-agent-tasks)
 
 This is an administrator recipe for **organizationally approved metadata-only
 monitoring of ordinary Copilot CLI sessions**. It is not a test command and has
@@ -21,8 +21,9 @@ configuration, including plugins, MCP servers, hooks, custom instructions, and
 tools. Normal sessions use the user's real profile and working directory;
 synthetic test isolation is deliberately not claimed here.
 
-Complete the [synthetic verification](verification.md) first. **The current
-relay evidence does not close this onboarding gate:** native AMW metric
+Require fresh synthetic backend proof using the
+[relay tools](src/README.md) and [evidence requirements](AGENTS.md#telemetry-evidence).
+**The current relay evidence does not close this onboarding gate:** native AMW metric
 queries returned no series, and authenticated workbook rendering remains
 unverified. Linux synthetic log/span/event and label transport proof is not
 enterprise rollout acceptance. The default
@@ -60,9 +61,44 @@ or another user's Azure/GitHub credentials. Endpoint URLs are not passwords,
 but still reveal infrastructure metadata and should stay within the approved
 organization.
 
+## Local-host environment variables
+
+Configure these in the environment inherited by the Copilot CLI process,
+before launching it. Use the approved Function hostname, not the native DCE
+URL, for the default relay route. Do not put Azure tokens or Function keys in
+GPOs, shell profiles, or endpoint-management settings.
+
+| Variable | Relay configuration |
+| --- | --- |
+| `COPILOT_OTEL_ENABLED` | `true` |
+| `COPILOT_OTEL_EXPORTER_TYPE` | `otlp-http` |
+| `COPILOT_OTEL_SOURCE_NAME` | `github.copilot` |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` |
+| `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | `http/protobuf` |
+| `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | `http/protobuf` |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | `https://<approved-function-host>/v1/traces` |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | `https://<approved-function-host>/v1/metrics`; relay metric persistence remains unverified |
+| `OTEL_SERVICE_NAME` | `github-copilot` |
+| `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `false` |
+| `OTEL_RESOURCE_ATTRIBUTES` | Optional approved, percent-encoded `host.name` and `user.id`; see the attribution sections below |
+
+Clear conflicting `OTEL_EXPORTER_OTLP_ENDPOINT`,
+`COPILOT_OTEL_FILE_EXPORTER_PATH`, and generic/per-signal
+`OTEL_EXPORTER_OTLP*_HEADERS` settings for this no-client-Azure-auth route.
+Reconcile inherited resource attributes rather than silently replacing
+organization-approved labels. The complete shell recipe below starts from
+explicit settings and clears previous resource labels.
+
+GPO or endpoint management can distribute the static values. Resolve host and
+user labels in the actual user's logon context or launcher, not a SYSTEM
+startup task. A running CLI does not inherit subsequent environment changes;
+start a new process from a shell that has the updated settings. Windows/AD/GPO
+deployment has not been validated in this repository. GitHub/Copilot sign-in
+and network access through the Function allowlist are still prerequisites.
+
 ## Default relay: ephemeral Linux shell recipe
 
-After [relay deployment](relay-deployment.md) and fresh acceptance, use
+After [relay deployment](docs/relay-deployment.md) and fresh acceptance, use
 administrator-provided HTTPS URLs from the separate relay receipt. This is
 approved ordinary use, **not a synthetic test**. Do not use normal-user
 sessions as release evidence.
@@ -123,7 +159,8 @@ machine's value before the CLI inherits its environment.
 
 An isolated Linux CLI test through the existing relay verified the exact
 OS-reported hostname in Log Analytics. No Function or DCR change was needed.
-See [the repeatable hostname test](verification.md#hostname-attribution).
+See [the isolated smoke helper](src/README.md) and
+[recorded hostname evidence](docs/evidence/function-relay.md).
 For recent host-tagged spans, run:
 
 ```kusto
@@ -193,8 +230,7 @@ a claim that Azure automatically populated a built-in authenticated-user
 column. Both labels are **client-asserted and can be changed by the sender**.
 The relay authenticates itself upstream, not the claimed employee. User
 identifiers require appropriate privacy notice, retention and access control.
-The [isolated verification](verification.md#user-attribution) keeps message
-content capture off.
+The [isolated smoke helper](src/README.md) keeps message content capture off.
 
 ## Optional direct-authenticated Linux shell recipe
 
@@ -288,7 +324,8 @@ credential policy; exiting this subshell does not erase that cache.
 
 ## Find ordinary sessions
 
-Use the [LAW workbook](visualizations.md) with a relevant time range and the
+Use the LAW workbook described in [agent context](AGENTS.md#workbook-context-and-agent-tasks)
+with a relevant time range and the
 CLI's built-in conversation or trace identifier. Ordinary sessions do not need
 `copilot.run.id` or `copilot.audit.scenario`; those are optional diagnostic
 columns used by the synthetic harness. Leave RunId blank when browsing

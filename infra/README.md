@@ -1,7 +1,7 @@
 # Infrastructure contracts
 
 [Administrator guide](../README.md) | [Native CLI runbook](../docs/deployment.md) |
-[Relay CLI runbook](../docs/relay-deployment.md) | [Cleanup](../docs/cleanup.md)
+[Relay CLI runbook](../docs/relay-deployment.md) | [Agent context](../AGENTS.md)
 
 Deploy using the reviewed Markdown **Azure CLI/Bicep commands**. Python is not
 a deployment or cleanup prerequisite. Template compilation is offline contract

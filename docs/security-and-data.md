@@ -1,6 +1,6 @@
 # Security, privacy, and data handling
 
-[Administrator guide](../README.md) | [Verification](verification.md)
+[Administrator guide](../Administrators.md) | [Evidence requirements](../AGENTS.md#telemetry-evidence)
 
 ## Synthetic-only scope
 
@@ -32,7 +32,7 @@ Earlier explicitly approved synthetic capture-on records remain in LAW under
 its retention policy. Keeping capture off in the final relay and identity
 tests does not remove those earlier records or prove a content-free workspace.
 
-[Normal metadata-only onboarding](usage.md) is a separate, organizationally
+[Normal metadata-only onboarding](../Administrators.md) is a separate, organizationally
 approved operational recipe. It is not executed as a test and does not authorize
 content capture. Approval for ordinary use never permits normal-user code or
 history to be included in the synthetic evidence.
@@ -167,8 +167,8 @@ Only manually reviewed sanitized summaries belong in
 [relay evidence](evidence/function-relay.md); preserve
 [v1 evidence](evidence/v1.md) as historical direct-auth evidence.
 Do not publish raw telemetry or credential-bearing
-diagnostics to explain a failure. The repository remains private; a LinkedIn
-draft neither changes visibility nor gives readers repository access.
+diagnostics to explain a failure. The repository remains private; documentation
+does not authorize a visibility change or grant repository access.
 
 ## Retention, cost, and cleanup
 
@@ -186,15 +186,16 @@ evaluation and design a label policy before wider use. Copilot inference and
 other Azure operations can incur additional charges. Use approved budgets and
 alerts, not the LAW cap alone.
 
-Nothing is automatically deleted after verification. Follow
-[cleanup](cleanup.md) and retain only the evidence your
+Nothing is automatically deleted after verification. Follow separately
+approved lifecycle procedures and retain only the evidence your
 policy requires. Resource deletion does not establish immediate removal from
 every retained service copy or backup.
 
 The relay group is separate from the v1 monitoring group and uses a fresh
 ownership marker. Its publishing assignment lives on the **existing DCR** and
 must be reviewed/removed explicitly before native teardown; group deletion
-alone leaves that external assignment. Follow the [CLI cleanup runbook](cleanup.md)
+alone leaves that external assignment. Preserve the
+[resource lifecycle constraints](../AGENTS.md#resource-lifecycle-constraints)
 without changing historical ownership guards or saved-search baselines.
 
 ## Audit limitations

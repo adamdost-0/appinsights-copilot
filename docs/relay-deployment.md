@@ -1,7 +1,7 @@
 # Deploy or update the restricted OTLP Function relay
 
-[Native deployment](deployment.md) | [Usage](usage.md) |
-[Verification](verification.md#relay-no-client-auth-acceptance) | [Cleanup](cleanup.md)
+[Native deployment](deployment.md) | [Administrators](../Administrators.md) |
+[Agent context and evidence requirements](../AGENTS.md)
 
 The default route is **client without an Azure bearer token or Function key ->
 restricted HTTPS Function -> managed-identity-authenticated DCE -> existing
@@ -404,7 +404,9 @@ backend persistence proof before claiming successful code deployment.
 Check the single `v1/{signal}` trigger, all three supported signal paths
 `/v1/traces`, `/v1/logs`, `/v1/metrics`, and anonymous
 trigger authorization, then perform positive **no-client-auth** request/backend
-proof and negative off-allowlist proof in [verification](verification.md#relay-no-client-auth-acceptance).
+proof and negative off-allowlist proof under the
+[evidence requirements](../AGENTS.md#telemetry-evidence), using the
+[isolated relay tools](../src/README.md).
 Do not add `?code=` or an `Authorization` header to make the positive probe
 pass. A 404/403/5xx or missing LAW marker is not a success.
 

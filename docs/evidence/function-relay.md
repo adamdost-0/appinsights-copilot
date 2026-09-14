@@ -91,8 +91,8 @@ The test used the existing Function/DCE without redeployment, kept content
 capture off, and supplied no client Azure credentials. It followed a successful
 end-to-end relay preflight. The smoke helper's optional `--user-id` validates
 and percent-encodes the supplied value; the full Node suite passed **64 tests**.
-See [the client recipe](../usage.md#opt-in-user-attribution) and
-[repeatable verification](../verification.md#user-attribution).
+See [the administrator recipe](../../Administrators.md#opt-in-user-attribution)
+and [isolated smoke tools](../../src/README.md).
 
 This proves transport of the declared OS-account label, not an authenticated
 GitHub/Entra identity or attribution of a human behind a shared/service account.
@@ -122,4 +122,4 @@ Native metric-series user labels were not verified. Private proof:
 
 Actual endpoints, subscription identifiers, source IP, deployment receipts,
 request traces, ZIPs, and raw query results remain in ignored `.local/`.
-The repository remains private; no public release or LinkedIn post is implied.
+The repository remains private; no public release is implied.

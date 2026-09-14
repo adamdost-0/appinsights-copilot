@@ -106,5 +106,6 @@ For real isolated CLI verification, `tools/smoke-copilot.mjs` accepts optional
 `--host-name` and `--user-id` labels. These become percent-encoded
 `host.name`/`user.id` resource attributes; neither is automatically captured by
 the helper. Their declared values are recorded only in the private run manifest.
-See [user attribution verification](../docs/verification.md#user-attribution).
+See [administrator attribution guidance](../Administrators.md#opt-in-user-attribution)
+and [recorded relay evidence](../docs/evidence/function-relay.md).
 They are client assertions, not authenticated device or employee identity.
